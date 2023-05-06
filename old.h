@@ -8,15 +8,12 @@
 #include <SDL/SDL.h>
 
 //needs to be lower or vec_equal to 64!
-#define CHUNK_SIZE 61
+#define CHUNK_SIZE 62
 #define MINIMAP_WIDTH 30
 #define MINIMAP_HEIGHT 30
 #define WINDOW_WIDTH 1600
 #define WINDOW_HEIGHT 900
-#define TARGET_MS 16
-
-#define CLEAR_COLOR_1 0x111111FF
-#define CLEAR_COLOR_2 0x070707FF
+#define TARGET_MS 0
 
 #define UPDATE_SCREEN true
 #define UPDATE_SYMULATION true
@@ -73,47 +70,12 @@ bool vec_equal(Vec2i a, Vec2i b);
 struct Chunk
 {
 	Vec2i pos;
-	u64 data[64];
+	u64 data[CHUNK_SIZE];
 };
 
 bool get_at(const Chunk* chunk, Vec2i pos);
 void set_at(Chunk* chunk, Vec2i pos);
 bool get_at_chunk(Chunk* chunks[9], Vec2i pos);
-
-void print_chunk(const Chunk* chunk)
-{
-	for(i32 y = 0; y < 64; y++)
-	{
-		for(i32 x = 0; x < 64; x ++)
-		{
-			u64 bit = (u64) 1 << x;
-			if(chunk->data[y] & bit)
-				printf("#");
-			else
-			{
-				if(x == 0 || x == 63 || y == 0 || y == 63)
-					printf("_");
-				else
-					printf(".");
-			}
-
-		}
-
-		printf("\n");
-	}
-}
-
-
-void print_bits(u64 val) 
-{
-	for(i32 i = 0; i < 64; i ++)
-	{
-		u64 bit = (val >> i) & 1;
-		printf("%d ", (int) bit);
-	}
-		
-	printf("\n");
-};
 
 //Chunk hashes
 struct Hash_Slot;
@@ -204,139 +166,12 @@ struct Perf_Counter_Executor
 
 #define PERF_COUNTER(...) Perf_Counter_Executor CONCAT(__perf_counter__, __LINE__)(__COUNTER__, __LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
 
-
-Vec2i get_chunk_pos(Vec2i sym_position){
-	Vec2i output = {0};
-	if(sym_position.x >= 0)
-		output.x = sym_position.x / CHUNK_SIZE;
-	else
-		output.x = (sym_position.x - CHUNK_SIZE + 1) / CHUNK_SIZE;
-
-	if(sym_position.y >= 0)
-		output.y = sym_position.y / CHUNK_SIZE;
-	else
-		output.y = (sym_position.y - CHUNK_SIZE + 1) / CHUNK_SIZE;
-
-	return output;
-};
-	
-Vec2i get_pixel_pos(Vec2i sym_position){
-	Vec2i output = {
-		(sym_position.x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE,
-		(sym_position.y % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE,
-	};
-
-	return output;
-};
-
-Vec2i to_screen_pos(Vec2f64 sym_position, Vec2f64 sym_center, Vec2i screen_center, f64 zoom){
-	Vec2i screen_offset = {
-		(i32) floor((sym_position.x - sym_center.x) * zoom),
-		(i32) floor((sym_position.y - sym_center.y) * zoom)
-	};
-
-	Vec2i screen_position = vec_add(screen_offset, screen_center);
-	return screen_position;
-};
-	
-Vec2f64 to_sym_pos(Vec2i screen_position, Vec2f64 sym_center, Vec2i screen_center, f64 zoom){
-	Vec2i screen_offset = vec_sub(screen_position, screen_center);
-
-	Vec2f64 sym_position = {
-		(f64) screen_offset.x / zoom + sym_center.x,
-		(f64) screen_offset.y / zoom + sym_center.y,
-	};
-
-	return sym_position;
-};
-
-void set_pixel_at(Chunk_Hash* chunk_hash, Vec2i sym_pos){
-	Vec2i place_at_chunk = get_chunk_pos(sym_pos);
-	Vec2i place_at_pixel = get_pixel_pos(sym_pos);
-
-	i32 chunk_i = insert_chunk(chunk_hash, place_at_chunk);
-	Chunk* chunk = get_chunk(chunk_hash, chunk_i);
-	set_at(chunk, place_at_pixel);
-
-	for(i32 i = 0; i < 8; i++)
-		insert_chunk(chunk_hash, vec_add(DIRECTIONS[i], place_at_chunk));
-};
-	
-void set_pixel_at_f(Chunk_Hash* chunk_hash, Vec2f64 sym_posf){
-	Vec2i sym_pos = {
-		(i32) round(sym_posf.x),
-		(i32) round(sym_posf.y),
-	};
-
-	set_pixel_at(chunk_hash, sym_pos);
-};
-
-Chunk* get_chunk_or(Chunk_Hash* chunk_hash, Vec2i chunk_pos, Chunk* if_not_found){
-	i32 found = find_chunk(chunk_hash, chunk_pos);
-	if(found == -1)
-		return if_not_found;
-	else
-		return get_chunk(chunk_hash, found);
-};
-
-void draw_chunk(Chunk* chunk, Vec2i chunk_pos_sym, Vec2f64 sym_center, Vec2i screen_center, f64 zoom, SDL_Texture* chunk_texture, SDL_Renderer* renderer)
-{
-	Vec2f64 sym_pos_top = {(f64) chunk_pos_sym.x * CHUNK_SIZE, (f64) chunk_pos_sym.y * CHUNK_SIZE};
-	Vec2f64 sym_pos_bot = {(f64) (chunk_pos_sym.x + 1) * CHUNK_SIZE, (f64) (chunk_pos_sym.y + 1) * CHUNK_SIZE};
-
-	Vec2i screen_pos_top = to_screen_pos(sym_pos_top, sym_center, screen_center, zoom);
-	Vec2i screen_pos_bot = to_screen_pos(sym_pos_bot, sym_center, screen_center, zoom);
-	Vec2i screen_size = vec_sub(screen_pos_bot, screen_pos_top);
-
-	u32 clear_color = CLEAR_COLOR_1;
-	if((chunk_pos_sym.y % 2 + chunk_pos_sym.x) % 2)
-		clear_color = CLEAR_COLOR_2;
-
-	uint32_t* pixels = nullptr;
-	int pitch = 0;
-	SDL_LockTexture(chunk_texture, NULL, (void**) &pixels, &pitch);
-				
-	for(i32 j = 0; j < CHUNK_SIZE; j++)
-		for(i32 i = 0; i < CHUNK_SIZE; i ++)
-		{
-			if(get_at(chunk, Vec2i{i, j}))
-				pixels[i + j*CHUNK_SIZE] = (uint32_t) -1; 
-			else
-				pixels[i + j*CHUNK_SIZE] = clear_color;
-		}
-			
-		
-	SDL_UnlockTexture(chunk_texture);
-			
-	SDL_Rect dest_rect = {}; 
-	dest_rect.x = (int) screen_pos_top.x; 
-	dest_rect.y = (int) screen_pos_top.y; 
-	dest_rect.w = (int) screen_size.x; 
-	dest_rect.h = (int) screen_size.y; 
-	SDL_RenderCopy(renderer, chunk_texture, NULL, &dest_rect);
-};
-
-void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i screen_center, f64 zoom, Chunk_Hash* chunk_hash, SDL_Texture* chunk_texture, SDL_Renderer* renderer)
-{
-	SDL_RenderClear(renderer);
-	PERF_COUNTER();
-	Chunk empty_chunk = {0};
-	for(i32 chunk_y = top_chunk.y; chunk_y < bot_chunk.y; chunk_y++)
-	{
-		for(i32 chunk_x = top_chunk.x; chunk_x < bot_chunk.x; chunk_x++)
-		{
-			Vec2i chunk_pos_sym = Vec2i{chunk_x, chunk_y};
-			Chunk* chunk = get_chunk_or(chunk_hash, chunk_pos_sym, &empty_chunk);
-			draw_chunk(chunk, chunk_pos_sym, sym_center, screen_center, zoom, chunk_texture, renderer);
-		}
-	}
-	SDL_RenderPresent(renderer);
-};
-
 int main(int argc, char *argv[]) {
 
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
 			return 1;
+	
+	char __STATIC_ASSERT_[0 < CHUNK_SIZE && CHUNK_SIZE <= 64 ? 1 : 0] = {0};
 
 	SDL_Window* window = SDL_CreateWindow("Game of Life", 100, 100, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
 	SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -361,261 +196,98 @@ int main(int argc, char *argv[]) {
 	Chunk_Hash* curr_chunk_hash = &chunk_hash1;
 	Chunk_Hash* next_chunk_hash = &chunk_hash2;
 
+	const char* filename = "map.txt";
+	char* read = read_whole_file(filename);
+	if(read == nullptr)
 	{
-		const auto set_at = [](u64 data[64], i32 x, i32 y) {
-			
-			i32 i = x + y*64;
-
-			i32 mask_i = i / 64;
-			i32 bit_i = i % 64;
-			u64 bit = (u64) 1 << bit_i;
-
-			data[mask_i] |= bit;
-		};
-		
-		const auto get_at = [](u64 data[64], i32 x, i32 y) {
-			u64 bit = (u64) 1 << x;
-
-			return (bool) (data[y] & bit);
-		};
-		
-		const auto print_oct = [](const char* label, u64 val) {
-			printf("%s", label);
-			for(i32 i = 0; i < 64; i+= 3)
-			{
-				u64 oct = (val >> i) & 0b111;
-				printf("%d ", (int) oct);
-			}
-
-			printf("\n");
-		};
-		
-		const auto print_oct_board = [](const char* label, u8 arr[64][64]) {
-			printf("\n%s\n", label);
-			for(i32 y = 0; y < 64; y += 1)
-			{
-				for(i32 x = 0; x < 64; x += 1)
-				{
-					printf("%d ", (int) arr[y][x]);
-				}
-				printf("\n");
-			}
-		};
-		
-		const auto splice_into = [](u64 val, i32 k, u8 arr[64]) {
-			for(i32 i = k; i < 64; i+= 3)
-			{
-				u64 oct = (val >> (i - k)) & 0b111;
-				assert(arr[i] == 0);
-				arr[i] = (u8) oct;
-			}
-		};
-		
-		u64 data[64] = {0};
-		u64 new_data[64] = {0};
-
-		//0 0 1 1 1 0 0 0 1 1 0 1 1 1 0 0
-		//0 0 0 0 0 0 1 1 1 0 0 0 1 1 1 0
-		//flier
-		//set_at(data, 2, 1);
-		//set_at(data, 3, 2);
-		//set_at(data, 3, 3);
-		//set_at(data, 2, 3);
-		//set_at(data, 1, 3);
-
-		////test
-		//set_at(data, 15, 1);
-		
-
-		//Test overfull
-		//set_at(data, 10, 10);
-		//set_at(data, 11, 10);
-		//set_at(data, 12, 10);
-		//
-		//set_at(data, 10, 11);
-		//set_at(data, 11, 11);
-		//set_at(data, 12, 11);
-		//
-		//set_at(data, 10, 12);
-		//set_at(data, 11, 12);
-		//set_at(data, 12, 12);
-
-
-		//Test line
-		for(i32 x = 1; x < 62; x++)
-			set_at(data, x, 30);
-
-		for(i32 y = 0; y < 64; y++)
-		{
-			for(isize x = 0; x < 64; x ++)
-			{
-				if(get_at(data, x, y))
-					printf("#");
-				else
-					printf(".");
-			}
-
-			printf("\n");
-		}
-		printf("END\n\n");
-		
-		i32 print_from = 0;
-		i32 print_to = 0;
-		i32 repeats = 0;
-		u64 sliding_mask = 0b111;
-		u64 pattern = 011'11111'11111'11111'11111;
-		u64 oct0 = pattern << 0; //pattern of 0b001001...
-		u64 oct1 = pattern << 1; //pattern of 0b010010...
-		u64 oct2 = pattern << 2; //pattern of 0b100100...
-		print_bits(pattern);
-
-		u64 data1 = data[1];
-		print_bits(data1);
-			
-		u8 accumulated[64] = {0};
-
-		for(i32 slot = 0; slot < 3; slot++)
-		{
-			u64 slid = (data1 << 1);
-			u64 curr_accumulator = 0;
-			curr_accumulator += (oct0 & (slid >> (0 + slot)));
-			curr_accumulator += (oct0 & (slid >> (1 + slot)));
-			curr_accumulator += (oct0 & (slid >> (2 + slot)));
-			splice_into(curr_accumulator, slot, accumulated);
-		}
-
-		for(i32 x = 0; x < 64; x += 1)
-		{
-			printf("%d ", (int) accumulated[x]);
-		}
-		printf("\n");
-
-		for(i32 l = 0; l < repeats; l++)
-		{
-			u8 accumulators_[64][64] = {0};
-			u8 first_sum_	[64][64] = {0};
-			u8 has_4_		[64][64] = {0};
-			u8 has_any_		[64][64] = {0};
-			u8 is_overfull_	[64][64] = {0};
-			u8 complete_sum_[64][64] = {0};
-			u8 complete_sum_stage_1_[64][64] = {0};
-			u8 complete_sum_stage_2_[64][64] = {0};
-			u8 is_alive_	[64][64] = {0};
-			u8 is_three_	[64][64] = {0};
-			u8 is_four_		[64][64] = {0};
-			u8 is_next_alive_[64][64] = {0};
-
-			for(i32 y = 0; y < 64; y++)
-				new_data[y] = 0;
-				
-			//u64 pattern = 0111111; //pattern of 0b001001... repeating (in oct)
-			
-
-			//for all three offsets in the 3 bit slots
-			for(i32 slot = 0; slot < 3; slot++)
-			{
-				u64 accumulators[64] = {0};
-				
-
-				for(i32 i = 0; i < 64; i++)
-				{
-					u64 curr_accumulator = 0;
-					u64 slid = (data[i] << 1); 
-					//we have to align it so that its in the ceneter of the oct
-					//otherwise for     0b 0 0 1 0 0 0 1 0
-					//we woudl geenrate    1 1 1 0 1 1 1 0
-					//but we want:         0 1 1 1 0 1 1 1
-
-					curr_accumulator += (oct0 & (slid >> (0 + slot)));
-					curr_accumulator += (oct0 & (slid >> (1 + slot)));
-					curr_accumulator += (oct0 & (slid >> (2 + slot)));
-					accumulators[i] = curr_accumulator;
-					splice_into(accumulators[i], slot, accumulators_[i]);
-				}
-
-				//iterate all inner cells of the chunk
-				for(i32 y = 1; y < 63; y++)
-				{
-					u64 first_sum = accumulators[y - 1] + accumulators[y];
-					u64 has_4 = first_sum & oct2;
-					
-					u64 has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
-
-					u64 is_overfull = has_4 & has_any;
-					u64 complete_sum_stage_1 = ~is_overfull & first_sum;
-					u64 complete_sum_stage_2 = accumulators[y + 1];
-					u64 complete_sum = (~is_overfull & first_sum) + accumulators[y + 1];
-
-					u64 three_pattern = oct0 | oct1;
-					u64 four_pattern = oct2;
-
-					u64 three_check = three_pattern ^ complete_sum; //completely 0 if is three
-					u64 four_check = four_pattern ^ complete_sum; //completely 0 if is four
-
-					u64 is_not_three = (three_check & oct0) << 2 | (three_check & oct1) << 1 | (three_check & oct2) << 0;
-					u64 is_not_four  = (four_check & oct0) << 2 | (four_check & oct1) << 1 | (four_check & oct2) << 0;    
-					u64 is_alive     = (oct0 & (data[y] >> slot)) << 2; 
-					
-					u64 is_three = ~is_not_three; 
-					u64 is_four = ~is_not_four; 
-					u64 is_next_alive = (is_three | (is_alive & is_four)) & ~is_overfull;
-
-					is_next_alive &= oct2;
-
-					new_data[y] |= (is_next_alive >> (2 - slot));
-					splice_into(first_sum, slot, first_sum_[y]);
-					splice_into(has_4, slot, has_4_	[y]);
-					splice_into(has_any, slot, has_any_	[y]);
-					splice_into(is_overfull, slot, is_overfull_[y]);
-					splice_into(complete_sum, slot, complete_sum_[y]);
-					splice_into(complete_sum_stage_1, slot, complete_sum_stage_1_[y]);
-					splice_into(complete_sum_stage_2, slot, complete_sum_stage_2_[y]);
-					splice_into(is_three, slot, is_three_[y]);
-					splice_into(is_four, slot, is_four_	[y]);
-					splice_into(is_alive, slot, is_alive_	[y]);
-					splice_into(is_next_alive, slot, is_next_alive_[y]);
-				}
-			}
-			 
-			if(print_from <= l && l < print_to)
-			{
-				print_oct_board("accumulators_", accumulators_);
-				//print_oct_board("first_sum_", first_sum_);
-				//print_oct_board("has_4_", has_4_);
-				//print_oct_board("has_any_", has_any_);
-				//print_oct_board("is_overfull_", is_overfull_);
-				//print_oct_board("complete_sum_stage1", complete_sum_stage_1_);
-				//print_oct_board("complete_sum_stage2", complete_sum_stage_2_);
-				print_oct_board("complete_sum_", complete_sum_);
-				print_oct_board("is_alive_", is_alive_);
-				//print_oct_board("is_three_", is_three_);
-				//print_oct_board("is_four_", is_four_);
-				//print_oct_board("is_next_alive_", is_next_alive_);
-			}
-			
-			for(i32 y = 0; y < 64; y++)
-			{
-				for(isize x = 0; x < 64; x ++)
-				{
-					if(get_at(new_data, x, y))
-						printf("#");
-					else
-						printf(".");
-				}
-
-				printf("\n");
-			}
-			printf("END\n\n");
-			
-			int x = 10;
-
-			for(i32 y = 0; y < 64; y++)
-				data[y] = new_data[y];
-
-		}
-
-		int x = 10;
+		printf("Invalid input file!");
+		abort();
 	}
+	
+	if(false)
+	{
+	
+		Parse_Error parse_error = parse_text_into_chunks(curr_chunk_hash, read);
+		switch(parse_error)
+		{
+			case PARSE_ERROR_BAD_DIMENSIONS:
+				printf("Error reading file %s. The file must have the width and height on the fist line!\n"
+					"File:\n=======\n%s\n=======", filename, read);
+				abort();
+
+			case PARSE_ERROR_INVALID_CAHARCTER:
+				printf("Error reading file %s. The file must only contain 'X' (alive), '.' (dead) and newlines!\n"
+					"File:\n=======\n%s\n=======", filename, read);
+				abort();
+
+			default: break;
+		}
+	}
+	
+
+	
+	const auto get_chunk_pos = [](Vec2i sym_position){
+		Vec2i output = {0};
+		if(sym_position.x >= 0)
+			output.x = sym_position.x / CHUNK_SIZE;
+		else
+			output.x = (sym_position.x - CHUNK_SIZE + 1) / CHUNK_SIZE;
+
+		if(sym_position.y >= 0)
+			output.y = sym_position.y / CHUNK_SIZE;
+		else
+			output.y = (sym_position.y - CHUNK_SIZE + 1) / CHUNK_SIZE;
+
+		return output;
+	};
+	
+	const auto get_pixel_pos = [](Vec2i sym_position){
+		Vec2i output = {
+			(sym_position.x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE,
+			(sym_position.y % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE,
+		};
+
+		return output;
+	};
+
+	const auto to_screen_pos = [](Vec2f64 sym_position, Vec2f64 sym_center, Vec2i screen_center, f64 zoom){
+		Vec2i screen_offset = {
+			(i32) floor((sym_position.x - sym_center.x) * zoom),
+			(i32) floor((sym_position.y - sym_center.y) * zoom)
+		};
+
+		Vec2i screen_position = vec_add(screen_offset, screen_center);
+		return screen_position;
+	};
+	
+	const auto to_sym_pos = [](Vec2i screen_position, Vec2f64 sym_center, Vec2i screen_center, f64 zoom){
+		Vec2i screen_offset = vec_sub(screen_position, screen_center);
+
+		Vec2f64 sym_position = {
+			(f64) screen_offset.x / zoom + sym_center.x,
+			(f64) screen_offset.y / zoom + sym_center.y,
+		};
+
+		return sym_position;
+	};
+
+	const auto set_pixel_at = [&](Chunk_Hash* chunk_hash, Vec2i sym_pos){
+		Vec2i place_at_chunk = get_chunk_pos(sym_pos);
+		Vec2i place_at_pixel = get_pixel_pos(sym_pos);
+
+		i32 chunk_i = insert_chunk(curr_chunk_hash, place_at_chunk);
+		Chunk* chunk = get_chunk(curr_chunk_hash, chunk_i);
+		set_at(chunk, place_at_pixel);
+	};
+	
+	const auto set_pixel_at_f = [&](Chunk_Hash* chunk_hash, Vec2f64 sym_posf){
+		Vec2i sym_pos = {
+			(i32) round(sym_posf.x),
+			(i32) round(sym_posf.y),
+		};
+
+		set_pixel_at(chunk_hash, sym_pos);
+	};
 
 	// main loop
 	f64 zoom = 3.0; //=real/sym
@@ -626,9 +298,19 @@ int main(int argc, char *argv[]) {
 	f64 last_update_clock = clock_s();
 	f64 last_frame_clock = clock_s();
 
-	for(i32 x = -250; x < 250; x++)
-		for(i32 y = -250; y < 250; y++)
-			set_pixel_at(curr_chunk_hash, Vec2i{x, y});
+	for(i32 i = -250; i < 250; i++)
+		set_pixel_at(curr_chunk_hash, Vec2i{i, 0});
+
+	//Insert all neigbouring chunks
+	i32 size_before = curr_chunk_hash->chunk_size;
+	for(i32 j = 0; j < size_before; j++)
+	{
+		for(i32 i = 0; i < 8; i++)
+		{
+			Chunk* curr = &curr_chunk_hash->chunks[j];
+			insert_chunk(curr_chunk_hash, vec_add(DIRECTIONS[i], curr->pos));
+		}
+	}
 
 	Vec2i old_mouse_pos = {0,0};
 	int x = 0;
@@ -638,54 +320,6 @@ int main(int argc, char *argv[]) {
 	old_mouse_pos.y = y;
 
 	bool paused = false;
-	
-	#if 0
-	set_pixel_at(curr_chunk_hash, Vec2i{1, 0});
-	set_pixel_at(curr_chunk_hash, Vec2i{2, 0});
-	set_pixel_at(curr_chunk_hash, Vec2i{3, 0});
-
-	
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 11});
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 12});
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 13});
-
-	//first
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 30});
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 31});
-	set_pixel_at(curr_chunk_hash, Vec2i{0, 32});
-	
-	//Left
-	set_pixel_at(curr_chunk_hash, Vec2i{-1, 1});
-	set_pixel_at(curr_chunk_hash, Vec2i{-1, 2});
-	set_pixel_at(curr_chunk_hash, Vec2i{-1, 3});
-	set_pixel_at(curr_chunk_hash, Vec2i{-2, 2});
-	set_pixel_at(curr_chunk_hash, Vec2i{-61, 1});
-	set_pixel_at(curr_chunk_hash, Vec2i{-61, 2});
-	set_pixel_at(curr_chunk_hash, Vec2i{-61, 3});
-	set_pixel_at(curr_chunk_hash, Vec2i{-62, 2});
-
-	//printf("\n\nleft\n"); print_chunk(left);
-
-	//corner top left
-	set_pixel_at(curr_chunk_hash, Vec2i{-1, -1});
-	set_pixel_at(curr_chunk_hash, Vec2i{62, 62});
-
-	//Right
-	set_pixel_at(curr_chunk_hash, Vec2i{62, 1});
-	set_pixel_at(curr_chunk_hash, Vec2i{62, 2});
-	set_pixel_at(curr_chunk_hash, Vec2i{62, 3});
-	set_pixel_at(curr_chunk_hash, Vec2i{63, 2});
-
-	//Top 
-	set_pixel_at(curr_chunk_hash, Vec2i{1, -1});
-	set_pixel_at(curr_chunk_hash, Vec2i{2, -2});
-	set_pixel_at(curr_chunk_hash, Vec2i{3, -1});
-
-	//Bottom 
-	set_pixel_at(curr_chunk_hash, Vec2i{2, 62});
-	set_pixel_at(curr_chunk_hash, Vec2i{3, 63});
-	set_pixel_at(curr_chunk_hash, Vec2i{4, 62});
-	#endif
 
 	while(true) 
 	{
@@ -795,8 +429,66 @@ int main(int argc, char *argv[]) {
 		bot_chunk.x += 1;
 		bot_chunk.y += 1;
 
+		// clear the screen
+
 		if(UPDATE_SCREEN)
-			update_screen(top_chunk, bot_chunk, sym_center, screen_center, zoom, curr_chunk_hash, chunk_texture, renderer);
+		{
+			SDL_RenderClear(renderer);
+			PERF_COUNTER();
+			for(i32 chunk_y = top_chunk.y; chunk_y < bot_chunk.y; chunk_y++)
+			{
+				for(i32 chunk_x = top_chunk.x; chunk_x < bot_chunk.x; chunk_x++)
+				{
+					Vec2i chunk_pos_sym = Vec2i{chunk_x, chunk_y};
+				
+					Vec2f64 sym_pos_top = {(f64) chunk_pos_sym.x * CHUNK_SIZE, (f64) chunk_pos_sym.y * CHUNK_SIZE};
+					Vec2f64 sym_pos_bot = {(f64) (chunk_pos_sym.x + 1) * CHUNK_SIZE, (f64) (chunk_pos_sym.y + 1) * CHUNK_SIZE};
+
+					Vec2i screen_pos_top = to_screen_pos(sym_pos_top, sym_center, screen_center, zoom);
+					Vec2i screen_pos_bot = to_screen_pos(sym_pos_bot, sym_center, screen_center, zoom);
+					Vec2i screen_size = vec_sub(screen_pos_bot, screen_pos_top);
+
+					u32 clear_color = 0x111111FF;
+					if((chunk_y % 2 + chunk_x) % 2)
+						clear_color = 0x070707FF;
+
+					uint32_t* pixels = nullptr;
+					int pitch = 0;
+					SDL_LockTexture(chunk_texture, NULL, (void**) &pixels, &pitch);
+
+					i32 middle_chunk_i = find_chunk(curr_chunk_hash, chunk_pos_sym);
+					if(middle_chunk_i == -1)
+					{
+						for(i32 j = 0; j < CHUNK_SIZE; j++)
+							for(i32 i = 0; i < CHUNK_SIZE; i ++)
+								pixels[i + j*CHUNK_SIZE] = clear_color;
+					}
+					else
+					{
+						Chunk* middle_chunk = get_chunk(curr_chunk_hash, middle_chunk_i);
+						for(i32 j = 0; j < CHUNK_SIZE; j++)
+							for(i32 i = 0; i < CHUNK_SIZE; i ++)
+							{
+								if(get_at(middle_chunk, Vec2i{i, j}))
+									pixels[i + j*CHUNK_SIZE] = (uint32_t) -1; 
+								else
+									pixels[i + j*CHUNK_SIZE] = clear_color;
+							}
+			
+					}
+		
+					SDL_UnlockTexture(chunk_texture);
+			
+					SDL_Rect dest_rect = {}; 
+					dest_rect.x = (int) screen_pos_top.x; 
+					dest_rect.y = (int) screen_pos_top.y; 
+					dest_rect.w = (int) screen_size.x; 
+					dest_rect.h = (int) screen_size.y; 
+					SDL_RenderCopy(renderer, chunk_texture, NULL, &dest_rect);
+				}
+			}
+			SDL_RenderPresent(renderer);
+		}
 
 		if((clock_s() - last_update_clock)*1000 >= TARGET_MS && paused == false && UPDATE_SYMULATION)
 		{
@@ -806,143 +498,65 @@ int main(int argc, char *argv[]) {
 			{
 				Chunk* chunk = &curr_chunk_hash->chunks[i];
 
-				Chunk* top   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0, -1}), empty_chunks);
-				Chunk* bot   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0,  1}), empty_chunks);
-				Chunk* left  = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}), empty_chunks);
-				Chunk* right = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  0}), empty_chunks);
-				
-				Chunk* top_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}), empty_chunks);
-				Chunk* top_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1, -1}), empty_chunks);
-				Chunk* bot_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}), empty_chunks);
-				Chunk* bot_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  1}), empty_chunks);
-				
+				Vec2i all_directions[9] = {
+					{-1, -1}, {0, -1}, {1, -1},
+					{-1, 0},  {0, 0},  {1, 0},
+					{-1, 1},  {0, 1},  {1, 1},
+				};
 
-				#define OUTER (CHUNK_SIZE + 1)
-
-				u64 R_OUTER_BIT = ((u64) 1 << OUTER);
-				u64 L_OUTER_BIT = ((u64) 1);
-				u64 CONTENT_BITS = (((u64) -1) & ~R_OUTER_BIT) & ~L_OUTER_BIT;
-				for(i32 i = OUTER; i < 64; i++)
-					CONTENT_BITS &= ~((u64) 1 << i);
-
-				//@TODO: use get set for this somehow & figure out what to do with middles
-				Chunk assembled = {};
-
-				assembled.data[0]  = top->data[OUTER - 1] & CONTENT_BITS;
-				assembled.data[OUTER] = bot->data[1] & CONTENT_BITS;
-				
-				u64 top_l_bit = (top_l->data[OUTER - 1] << 1) & R_OUTER_BIT;
-				u64 top_r_bit = (top_r->data[OUTER - 1] >> 1) & L_OUTER_BIT;
-				u64 bot_l_bit = (bot_l->data[1] << 1) & R_OUTER_BIT;
-				u64 bot_r_bit = (bot_r->data[1] >> 1) & L_OUTER_BIT;
-
-				assembled.data[0]  |= top_l_bit >> OUTER;
-				assembled.data[0]  |= top_r_bit << OUTER;
-				
-				assembled.data[OUTER] |= bot_l_bit >> OUTER;
-				assembled.data[OUTER] |= bot_r_bit << OUTER;
-
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
+				//Get all surounding chunks 
+				Chunk* surrounding[9] = {0};
+				for(i32 i = 0; i < 9; i++)
 				{
-					u64 middle = chunk->data[i + 1] & CONTENT_BITS;
-					u64 first = (left->data[i + 1] << 1) & R_OUTER_BIT;
-					u64 last = (right->data[i + 1] >> 1) & L_OUTER_BIT;
-
-					assembled.data[1 + i] = (first >> OUTER) | middle | (last << OUTER);
+					PERF_COUNTER("neighbour gather");
+					Vec2i pos = vec_add(chunk->pos, all_directions[i]);
+					i32 found = find_chunk(curr_chunk_hash, pos);
+					if(found == -1)
+					{
+						surrounding[i] = &empty_chunks[i];
+						surrounding[i]->pos = pos;
+					}
+					else
+					{
+						surrounding[i] = get_chunk(curr_chunk_hash, found);
+					}
 				}
-				
-				//draw_chunk(&assembled, chunk->pos, sym_center, screen_center, zoom, chunk_texture, renderer);
-				
-				//printf("ASSEMBLED!!!\n\n");
-				//print_chunk(&assembled);
-				//printf("END\n\n");
-				
+
+				//Any live cell with two or three live neighbours survives.
+				//Any dead cell with three live neighbours becomes a live cell.
+				//All other live cells die in the next generation. Similarly, all other dead cells stay dead.
+
 				Chunk new_chunk = {0};
-				new_chunk.pos = chunk->pos;
-				u64 pattern = 011'11111'11111'11111'11111;//pattern of 0b001001... repeating (in oct)
-				u64 oct0 = pattern << 0; //pattern of 0b001001...
-				u64 oct1 = pattern << 1; //pattern of 0b010010...
-				u64 oct2 = pattern << 2; //pattern of 0b100100...
-					
 				{
-					
 					PERF_COUNTER("life");
-					//for all three offsets in the 3 bit slots
-					for(i32 slot = 0; slot < 3; slot++)
+					new_chunk.pos = surrounding[4]->pos;
+					for(i32 y = 0; y < CHUNK_SIZE; y++)
 					{
-						u64 accumulators[64] = {0};
-
-						for(i32 i = 0; i < 64; i++)
+						for(i32 x = 0; x < CHUNK_SIZE; x++)
 						{
-							u64 curr_accumulator = 0;
-							u64 slid = (assembled.data[i] << 1); 
-							//we have to align it so that its in the ceneter of the oct
-							//otherwise for     0b 0 0 1 0 0 0 1 0
-							//we woudl geenrate    1 1 1 0 1 1 1 0
-							//but we want:         0 1 1 1 0 1 1 1
+							Vec2i curr_pos = Vec2i{x, y};
+							bool is_alive = get_at(surrounding[4], curr_pos);
+							i32 neighbours = 0;
+							for(i32 i = 0; i < 8; i++)
+								neighbours += get_at_chunk(surrounding, vec_add(curr_pos, DIRECTIONS[i]));
 
-							curr_accumulator += (oct0 & (slid >> (0 + slot)));
-							curr_accumulator += (oct0 & (slid >> (1 + slot)));
-							curr_accumulator += (oct0 & (slid >> (2 + slot)));
-							accumulators[i] = curr_accumulator;
-						}
-
-						//iterate all inner cells of the chunk
-						for(i32 y = 1; y < OUTER; y++)
-						{
-							u64 first_sum = accumulators[y - 1] + accumulators[y];
-							u64 has_4 = first_sum & oct2;
-					
-							u64 has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
-
-							u64 is_overfull = has_4 & has_any;
-							u64 complete_sum_stage_1 = ~is_overfull & first_sum;
-							u64 complete_sum_stage_2 = accumulators[y + 1];
-							u64 complete_sum = (~is_overfull & first_sum) + accumulators[y + 1];
-
-							u64 three_pattern = oct0 | oct1;
-							u64 four_pattern = oct2;
-
-							u64 three_check = three_pattern ^ complete_sum; //completely 0 if is three
-							u64 four_check = four_pattern ^ complete_sum; //completely 0 if is four
-
-							u64 is_not_three = (three_check & oct0) << 2 | (three_check & oct1) << 1 | (three_check & oct2) << 0;
-							u64 is_not_four  = (four_check & oct0) << 2 | (four_check & oct1) << 1 | (four_check & oct2) << 0;    
-							u64 is_alive     = (oct0 & (assembled.data[y] >> slot)) << 2; 
-					
-							u64 is_three = ~is_not_three; 
-							u64 is_four = ~is_not_four; 
-							u64 is_next_alive = (is_three | (is_alive & is_four)) & ~is_overfull;
-
-							is_next_alive &= oct2;
-
-							new_chunk.data[y] |= (is_next_alive >> (2 - slot));
+							if(is_alive)
+							{
+								if(neighbours == 2 || neighbours == 3)
+									set_at(&new_chunk, curr_pos);
+							}
+							else
+							{
+								if(neighbours == 3)
+									set_at(&new_chunk, curr_pos);
+							}
 						}
 					}
-				
-				}
-				//printf("NEW!!!\n\n");
-				//print_chunk(&new_chunk);
-				//printf("END\n\n");
-				//assert(new_chunk.data[0] == 0);
-				//assert(new_chunk.data[63] == 0);
-				if(true)
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
-				{
-					u64 middle1 = new_chunk.data[i + 1] & CONTENT_BITS;
-					u64 middle2 = new_chunk.data[i + 1] & CONTENT_BITS;
-					if(middle1 != middle2)
-					{
-						print_bits(CONTENT_BITS);
-						print_bits(middle1);
-						print_bits(middle2);
-					}
-					assert(middle1 == middle2);
 				}
 
 				u64 acummulated = 0;
 				for(i32 i = 0; i < CHUNK_SIZE; i++)
-					acummulated |= new_chunk.data[1 + i] & CONTENT_BITS;
+					acummulated |= new_chunk.data[i];
 
 				//Unless chunk is comletely dead insert itself alongside all neigboring chunks chunk_hash the next generation
 				if(acummulated != 0)
@@ -962,7 +576,7 @@ int main(int argc, char *argv[]) {
 			clear_chunk_hash(next_chunk_hash);
 
 			last_update_clock = clock_s();	
-			//printf("update time: %lf\n", clock_s() - clock_update);
+			printf("update time: %lf\n", clock_s() - clock_update);
 		}
 
 		f64 new_frame_clock = clock_s();
@@ -1019,24 +633,53 @@ bool vec_equal(Vec2i a, Vec2i b)
 	return a.x == b.x && a.y == b.y;
 }
 
+bool get_at_chunk(Chunk* chunks[9], Vec2i pos)
+{
+	i32 fixed_x = CHUNK_SIZE + pos.x;
+	i32 fixed_y = CHUNK_SIZE + pos.y;
+
+	assert(0 <= fixed_x && fixed_x < CHUNK_SIZE*3);
+	assert(0 <= fixed_y && fixed_y < CHUNK_SIZE*3);
+
+	i32 chunk_i_x = fixed_x / CHUNK_SIZE;
+	i32 chunk_i_y = fixed_y / CHUNK_SIZE;
+	i32 chunk_i = chunk_i_x + chunk_i_y*3;
+	assert(0 <= chunk_i && chunk_i < 9);
+
+	i32 i = (fixed_x % CHUNK_SIZE) + (fixed_y % CHUNK_SIZE)*CHUNK_SIZE;
+	assert(0 <= i);
+	
+	i32 mask_i = i / 64;
+	i32 bit_i = i % 64;
+	u64 bit = (u64) 1 << bit_i;
+	Chunk* chunk = chunks[chunk_i];
+	return !!(chunk->data[mask_i] & bit);
+}
+
 bool get_at(const Chunk* chunk, Vec2i pos)
 {
-	assert(-1 <= pos.x && pos.x < CHUNK_SIZE + 1);
-	assert(-1 <= pos.y && pos.y < CHUNK_SIZE + 1);
-	
-	u64 bit = (u64) 1 << (pos.x + 1);
-	
-	return (chunk->data[pos.y + 1] & bit) > 0;
+	assert(0 <= pos.x && pos.x < CHUNK_SIZE);
+	assert(0 <= pos.y && pos.y < CHUNK_SIZE);
+	i32 i = pos.x + pos.y*CHUNK_SIZE;
+
+	i32 mask_i = i / 64;
+	i32 bit_i = i % 64;
+	u64 bit = (u64) 1 << bit_i;
+
+	return (chunk->data[mask_i] & bit) > 0;
 }
 
 void set_at(Chunk* chunk, Vec2i pos)
 {
-	assert(-1 <= pos.x && pos.x < CHUNK_SIZE + 1);
-	assert(-1 <= pos.y && pos.y < CHUNK_SIZE + 1);
+	assert(0 <= pos.x && pos.x < CHUNK_SIZE);
+	assert(0 <= pos.y && pos.y < CHUNK_SIZE);
+	i32 i = pos.x + pos.y*CHUNK_SIZE;
 
-	u64 bit = (u64) 1 << (pos.x + 1);
-	
-	chunk->data[pos.y + 1] |= bit;
+	i32 mask_i = i / 64;
+	i32 bit_i = i % 64;
+	u64 bit = (u64) 1 << bit_i;
+
+	chunk->data[mask_i] |= bit;
 }
 
 u64 hash64(u64 value) 
@@ -1105,13 +748,11 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 	//if is overfull rehash
 	if(chunk_hash->chunk_size * 2 >= chunk_hash->hash_capacity)
 	{
-		PERF_COUNTER("Rehash");
 		i32 new_capacity = 16;
-		i32 max = chunk_hash->chunk_size * 4;
+		i32 max = chunk_hash->chunk_size * 2;
 		while(new_capacity < max)
 			new_capacity *= 2;
 		
-		printf("rehash to %d! %d bytes \n", (int) new_capacity, (int) (new_capacity * sizeof(Hash_Slot)));
 		//Allocate new slots 
 		Hash_Slot* new_hash = (Hash_Slot*) calloc(new_capacity * sizeof(Hash_Slot), new_capacity * sizeof(Hash_Slot));
 		if(new_hash == nullptr)
@@ -1165,8 +806,6 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 			printf("OUT OF MEMORY! ATTEMPTED TO GET %lld B", (long long int) new_capacity*sizeof(Chunk));
 			abort();
 		}
-
-		printf("realloc to size %d to bytes %lld\n", (int) new_capacity, (long long) new_capacity*sizeof(Chunk));
 
 		chunk_hash->chunks = new_chunks;
 		chunk_hash->chunk_capacity = new_capacity;
@@ -1228,6 +867,54 @@ i32 find_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 	}
 
 	return -1;
+}
+
+void render_minimap(SDL_Renderer* renderer, SDL_Texture* minimap_texture, Chunk_Hash* curr_chunk_hash)
+{
+	uint32_t* pixels = nullptr;
+	int pitch = 0;
+	SDL_LockTexture(minimap_texture, NULL, (void**) &pixels, &pitch);
+
+	//clear all pixels to base color
+	for(i32 j = 0; j < MINIMAP_HEIGHT; j++)
+		for(i32 i = 0; i < MINIMAP_WIDTH; i ++)
+		{
+			pixels[i + j*MINIMAP_HEIGHT] = 0x000005500;
+		}
+
+	//Draw all loaded chunks chunk_hash the minimap
+	for(i32 i = 0; i < curr_chunk_hash->chunk_size; i++)
+	{
+		i32 w2 = MINIMAP_WIDTH / 2;
+		i32 h2 = MINIMAP_HEIGHT / 2;
+		Chunk* chunk = &curr_chunk_hash->chunks[i];
+
+		i32 draw_at_x = chunk->pos.x + w2;
+		i32 draw_at_y = chunk->pos.y + w2;
+		i32 draw_at = draw_at_x + draw_at_y*MINIMAP_HEIGHT;
+
+		//If is within the drawable are draw it;
+		if(0 <= draw_at_x && draw_at_x <= MINIMAP_WIDTH
+			&& 0 <= draw_at_y && draw_at_y <= MINIMAP_WIDTH)
+		{
+			//sum all masks that contain a set bit to 
+			// estimate how much it is used
+			uint32_t inetnsity = 0;
+			for(i32 k = 0; k < CHUNK_SIZE; k++)
+				inetnsity += chunk->data[k] > 0;
+
+			//scale it and cap it
+			inetnsity *= 4;
+			if(inetnsity >= 256)
+				inetnsity = 255;
+
+			//make it chunk_hash a gray color
+			inetnsity = inetnsity << 24 | inetnsity << 16 | inetnsity << 8 | 0xFF;
+			pixels[draw_at_x + draw_at_y*MINIMAP_HEIGHT] = inetnsity; 
+		}
+	}
+
+	SDL_UnlockTexture(minimap_texture);
 }
 
 char* read_whole_file(const char* path)
