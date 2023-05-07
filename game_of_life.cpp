@@ -18,9 +18,14 @@
 #define CLEAR_COLOR_1 0x111111FF
 #define CLEAR_COLOR_2 0x070707FF
 
-#define UPDATE_SCREEN true
-#define UPDATE_SYMULATION true
-#define UPDATE_INPUT true
+#define UPDATE_SCREEN		true
+#define UPDATE_SYMULATION	true
+#define UPDATE_INPUT		true
+
+
+#define ZOOM_SPEED_FACTOR					1.02
+#define SYM_INCREASE_SPEED_FACTOR			5000
+#define SYM_INCREASE_SPEED_FACTOR_FRACTIOM	1.015
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -403,10 +408,6 @@ int main(int argc, char *argv[]) {
 	Vec2i window_size = {WINDOW_WIDTH, WINDOW_HEIGHT};
 	Vec2i screen_center = {window_size.x / 2, window_size.y / 2};
 	
-	#define ZOOM_SPEED_FACTOR 1.02
-	#define SYM_INCREASE_SPEED_FACTOR 5000
-	#define SYM_INCREASE_SPEED_FACTOR_FRACTIOM 1.015
-
 	f64 dt = 1.0 / TARGET_FRAME_TIME * 1000;
 	f64 last_sym_update_clock = clock_s();
 	f64 last_screen_update_clock = clock_s();
@@ -425,8 +426,12 @@ int main(int argc, char *argv[]) {
 
 	bool paused = false;
 
+	i64 generation = 0;
+
 	while(true) 
 	{
+		//PERF_COUNTER("main loop");
+
 		// event handling
 		SDL_Event e;
 		if(SDL_PollEvent(&e)) 
@@ -573,22 +578,43 @@ int main(int argc, char *argv[]) {
 
 		if((clock_s() - last_sym_update_clock)*1000 >= symulation_time && paused == false && UPDATE_SYMULATION)
 		{
+			generation++;
+
 			PERF_COUNTER("sym update");
 			f64 clock_update = clock_s();
 			for(i32 i = 0; i < curr_chunk_hash->chunk_size; i++)
 			{
+				PERF_COUNTER("single chunk");
 				Chunk* chunk = &curr_chunk_hash->chunks[i];
+				
+				Chunk* top   = nullptr;
+				Chunk* bot   = nullptr;
+				Chunk* left  = nullptr;
+				Chunk* right = nullptr;
+				
+				Chunk* top_l = nullptr;
+				Chunk* top_r = nullptr;
+				Chunk* bot_l = nullptr;
+				Chunk* bot_r = nullptr;
 
-				Chunk* top   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0, -1}), empty_chunks);
-				Chunk* bot   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0,  1}), empty_chunks);
-				Chunk* left  = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}), empty_chunks);
-				Chunk* right = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  0}), empty_chunks);
+				{
+					PERF_COUNTER("neighbour gather");
+					//@TODO: only add only needed chunks just like in the add after
+					//save the computation from last time
+
+					//@TODO: multithread this computation by adding processed chunks into separate arrays and then merging them tothether
+					//
+
+					top   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0, -1}), empty_chunks);
+					bot   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0,  1}), empty_chunks);
+					left  = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}), empty_chunks);
+					right = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  0}), empty_chunks);
 				
-				Chunk* top_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}), empty_chunks);
-				Chunk* top_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1, -1}), empty_chunks);
-				Chunk* bot_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}), empty_chunks);
-				Chunk* bot_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  1}), empty_chunks);
-				
+					top_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}), empty_chunks);
+					top_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1, -1}), empty_chunks);
+					bot_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}), empty_chunks);
+					bot_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  1}), empty_chunks);
+				}
 
 				#define OUTER (CHUNK_SIZE + 1)
 
@@ -687,20 +713,6 @@ int main(int argc, char *argv[]) {
 					}
 				}
 
-				if(true)
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
-				{
-					u64 middle1 = new_chunk.data[i + 1] & CONTENT_BITS;
-					u64 middle2 = new_chunk.data[i + 1] & CONTENT_BITS;
-					if(middle1 != middle2)
-					{
-						print_bits(CONTENT_BITS);
-						print_bits(middle1);
-						print_bits(middle2);
-					}
-					assert(middle1 == middle2);
-				}
-
 				u64 acummulated = 0;
 				for(i32 i = 0; i < CHUNK_SIZE; i++)
 					acummulated |= new_chunk.data[1 + i] & CONTENT_BITS;
@@ -711,8 +723,28 @@ int main(int argc, char *argv[]) {
 					PERF_COUNTER("neighbour add");
 					i32 curr_i = insert_chunk(next_chunk_hash, chunk->pos);
 					*get_chunk(next_chunk_hash, curr_i) = new_chunk;
-					for(i32 k = 0; k < 8; k++)
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, DIRECTIONS[k]));
+					
+					//left right 
+					if(acummulated & ((u64) 1 << 1))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}));
+					if(acummulated & ((u64) 1 << CHUNK_SIZE))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  0}));
+
+					//top bot
+					if(chunk->data[1] & CONTENT_BITS)
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  -1}));
+					if(chunk->data[CHUNK_SIZE] & CONTENT_BITS)
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  1}));
+						
+					//diagonals - there is only very small chence these will get added
+					if(get_at(chunk, Vec2i{0, 0}))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}));
+					if(get_at(chunk, Vec2i{0, CHUNK_SIZE - 1}))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}));
+					if(get_at(chunk, Vec2i{CHUNK_SIZE - 1, 0}))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  -1}));
+					if(get_at(chunk, Vec2i{CHUNK_SIZE - 1, CHUNK_SIZE - 1}))
+						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  1}));
 				}
 			}
 
@@ -739,6 +771,9 @@ int main(int argc, char *argv[]) {
 	destroy_chunk_hash(&chunk_hash1);
 	destroy_chunk_hash(&chunk_hash2);
 	
+
+	printf("generations: %d\n", (int) generation);
+	printf("total time: %lf\n generations/s: %lf", clock_s(), generation / clock_s());
 	for(isize i = 0; i < MAX_PERF_COUNTERS; i++)
 	{
 		if(perf_counters[i].function != nullptr)

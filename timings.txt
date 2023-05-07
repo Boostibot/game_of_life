@@ -1,0 +1,29 @@
+OLD:
+
+SDL_main 495 "sym update":        total: 16.57137330 run: 0.00854635 runs: 1939
+SDL_main 511 "neighbour gather":  total: 0.10378350  run: 0.00000005 runs: 2199258
+SDL_main 531 "life":              total: 16.31898560 run: 0.00006678 runs: 244362
+SDL_main 564 "neighbour add":     total: 0.04808440  run: 0.00000038 runs: 125276
+insert_chunk 747:                 total: 0.02914580  run: 0.00000003 runs: 1128056
+find_chunk 849:                   total: 0.04215390  run: 0.00000002 runs: 2199258
+
+NEW
+SDL_main 722 "sym update":        total: 17.27509000 run: 0.00043931 runs: 39323
+SDL_main 826 "life":              total: 13.89723880 run: 0.00000528 runs: 2630216
+SDL_main 941 "neighbour add":     total: 0.39839110 run: 0.00000039 runs: 1013024
+insert_chunk 1118:                total: 0.28321060 run: 0.00000002 runs: 11752628
+find_chunk 1220:                  total: 0.45824030 run: 0.00000002 runs: 21041728
+
+NEWEST
+update_screen 322:                total: 27.33577160 run: 0.00548581 runs: 4983
+SDL_main 806 "sym update":        total: 1.16897870 run: 0.00088828 runs: 1316
+SDL_main 872 "life":              total: 0.47510280 run: 0.00000050 runs: 954564
+SDL_main 953 "neighbour add":     total: 0.28843750 run: 0.00000042 runs: 680768
+insert_chunk 1107:                total: 0.23717980 run: 0.00000003 runs: 8604738
+insert_chunk 1111 "Rehash":       total: 0.00216440 run: 0.00012024 runs: 18
+find_chunk 1213:                  total: 0.34388000 run: 0.00000003 runs: 11018610
+
+//no screen
+generations: 17657
+total time: 4.866589
+generations/s: 3628.208662
