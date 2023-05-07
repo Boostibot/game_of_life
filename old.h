@@ -669,7 +669,7 @@ bool get_at(const Chunk* chunk, Vec2i pos)
 	return (chunk->data[mask_i] & bit) > 0;
 }
 
-void set_at(Chunk* chunk, Vec2i pos)
+void set_at(Chunk* chunk, Vec2i pos, bool to)
 {
 	assert(0 <= pos.x && pos.x < CHUNK_SIZE);
 	assert(0 <= pos.y && pos.y < CHUNK_SIZE);

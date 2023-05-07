@@ -13,7 +13,7 @@
 #define MINIMAP_HEIGHT 30
 #define WINDOW_WIDTH 1600
 #define WINDOW_HEIGHT 900
-#define TARGET_MS 16
+#define TARGET_FRAME_TIME 16.0
 
 #define CLEAR_COLOR_1 0x111111FF
 #define CLEAR_COLOR_2 0x070707FF
@@ -77,7 +77,7 @@ struct Chunk
 };
 
 bool get_at(const Chunk* chunk, Vec2i pos);
-void set_at(Chunk* chunk, Vec2i pos);
+void set_at(Chunk* chunk, Vec2i pos, bool to = true);
 bool get_at_chunk(Chunk* chunks[9], Vec2i pos);
 
 void print_chunk(const Chunk* chunk)
@@ -204,7 +204,6 @@ struct Perf_Counter_Executor
 
 #define PERF_COUNTER(...) Perf_Counter_Executor CONCAT(__perf_counter__, __LINE__)(__COUNTER__, __LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
 
-
 Vec2i get_chunk_pos(Vec2i sym_position){
 	Vec2i output = {0};
 	if(sym_position.x >= 0)
@@ -250,25 +249,28 @@ Vec2f64 to_sym_pos(Vec2i screen_position, Vec2f64 sym_center, Vec2i screen_cente
 	return sym_position;
 };
 
-void set_pixel_at(Chunk_Hash* chunk_hash, Vec2i sym_pos){
+void set_pixel_at(Chunk_Hash* chunk_hash, Vec2i sym_pos, bool to = true){
 	Vec2i place_at_chunk = get_chunk_pos(sym_pos);
 	Vec2i place_at_pixel = get_pixel_pos(sym_pos);
 
 	i32 chunk_i = insert_chunk(chunk_hash, place_at_chunk);
 	Chunk* chunk = get_chunk(chunk_hash, chunk_i);
-	set_at(chunk, place_at_pixel);
+	set_at(chunk, place_at_pixel, to);
 
-	for(i32 i = 0; i < 8; i++)
-		insert_chunk(chunk_hash, vec_add(DIRECTIONS[i], place_at_chunk));
+	if(to)
+	{
+		for(i32 i = 0; i < 8; i++)
+			insert_chunk(chunk_hash, vec_add(DIRECTIONS[i], place_at_chunk));
+	}
 };
 	
-void set_pixel_at_f(Chunk_Hash* chunk_hash, Vec2f64 sym_posf){
+void set_pixel_at_f(Chunk_Hash* chunk_hash, Vec2f64 sym_posf, bool to = true){
 	Vec2i sym_pos = {
 		(i32) round(sym_posf.x),
 		(i32) round(sym_posf.y),
 	};
 
-	set_pixel_at(chunk_hash, sym_pos);
+	set_pixel_at(chunk_hash, sym_pos, to);
 };
 
 Chunk* get_chunk_or(Chunk_Hash* chunk_hash, Vec2i chunk_pos, Chunk* if_not_found){
@@ -347,7 +349,7 @@ int main(int argc, char *argv[]) {
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
 			return 1;
 
-	SDL_Window* window = SDL_CreateWindow("Game of Life", 100, 100, WINDOW_WIDTH, WINDOW_HEIGHT, 0);
+	SDL_Window* window = SDL_CreateWindow("Game of Life", 100, 100, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 	SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 	
 	SDL_Texture* chunk_texture = SDL_CreateTexture(renderer,
@@ -385,12 +387,6 @@ int main(int argc, char *argv[]) {
 		SDL_UnlockTexture(clear_chunk_texture1);
 		SDL_UnlockTexture(clear_chunk_texture2);
 	}
-						   
-	SDL_Texture* minimap_texture = SDL_CreateTexture(renderer,
-                           SDL_PIXELFORMAT_BGRA8888,
-                           SDL_TEXTUREACCESS_STREAMING, 
-                           MINIMAP_WIDTH,
-                           MINIMAP_HEIGHT);
 
 	//We keep two hashes and swap between them on every uodate
 	Chunk_Hash chunk_hash1 = create_chunk_hash();
@@ -401,12 +397,19 @@ int main(int argc, char *argv[]) {
 	Chunk_Hash* next_chunk_hash = &chunk_hash2;
 
 	// main loop
-	f64 zoom = 3.0; //=real/sym
+	f64 zoom = 3.0;
+	f64 symulation_time = 30.0;
 	Vec2f64 sym_center = {0.0, 0.0};
-	Vec2i screen_center = {WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2};
+	Vec2i window_size = {WINDOW_WIDTH, WINDOW_HEIGHT};
+	Vec2i screen_center = {window_size.x / 2, window_size.y / 2};
 	
-	f64 dt = 1.0 / TARGET_MS * 1000;
-	f64 last_update_clock = clock_s();
+	#define ZOOM_SPEED_FACTOR 1.02
+	#define SYM_INCREASE_SPEED_FACTOR 5000
+	#define SYM_INCREASE_SPEED_FACTOR_FRACTIOM 1.015
+
+	f64 dt = 1.0 / TARGET_FRAME_TIME * 1000;
+	f64 last_sym_update_clock = clock_s();
+	f64 last_screen_update_clock = clock_s();
 	f64 last_frame_clock = clock_s();
 
 	for(i32 x = -250; x < 250; x++)
@@ -435,6 +438,36 @@ int main(int argc, char *argv[]) {
 			Vec2i new_mouse_pos = {x, y};
 			Vec2i mouse_delta = vec_sub(new_mouse_pos, old_mouse_pos);
 
+			const u8* keayboard_state = SDL_GetKeyboardState(nullptr);
+			if (keayboard_state[SDL_SCANCODE_P]) 
+			{
+				symulation_time += SYM_INCREASE_SPEED_FACTOR*dt;
+				printf("new sym time: %lf ms\n", symulation_time);
+			}
+			
+			if (keayboard_state[SDL_SCANCODE_O]) 
+			{
+				f64 new_symulation_time = symulation_time - SYM_INCREASE_SPEED_FACTOR*dt;
+				if(symulation_time / SYM_INCREASE_SPEED_FACTOR_FRACTIOM > new_symulation_time)
+					symulation_time /= SYM_INCREASE_SPEED_FACTOR_FRACTIOM;
+				else
+					symulation_time = new_symulation_time;
+				printf("new sym time: %lf ms\n", symulation_time);
+			}
+
+			if(e.type == SDL_WINDOWEVENT)
+			{
+				if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
+					int w = 0;
+					int h = 0;
+
+					SDL_GetWindowSize(window, &w, &h);
+					window_size.x = w;
+					window_size.y = h;
+					screen_center = {window_size.x / 2, window_size.y / 2};
+				}
+			}
+
 			if(e.type == SDL_KEYUP)
 			{
 				if(e.key.keysym.sym == SDLK_SPACE)
@@ -443,10 +476,10 @@ int main(int argc, char *argv[]) {
 
 			if(e.type == SDL_MOUSEWHEEL)
 			{
-				f64 div_by = TARGET_MS > 0 ? TARGET_MS : 1e8;
+				f64 div_by = TARGET_FRAME_TIME > 0 ? TARGET_FRAME_TIME : 1e8;
 				f64 normal_dt = 1000.0 / div_by;
-				f64 factor = 1.05;
-				if(dt > TARGET_MS)
+				f64 factor = ZOOM_SPEED_FACTOR;
+				if(dt > TARGET_FRAME_TIME)
 					factor *= normal_dt * dt;
 				if(e.wheel.y + e.wheel.x > 0)
 					zoom *= factor;
@@ -476,9 +509,10 @@ int main(int argc, char *argv[]) {
 					new_mouse_sym_f.y - old_mouse_sym_f.y,
 				};
 
+				bool is_draw = !keayboard_state[SDL_SCANCODE_D];
 				if(mouse_sym_delta_f.x == 0 && mouse_sym_delta_f.y == 0)
 				{
-					set_pixel_at_f(curr_chunk_hash, Vec2f64{new_mouse_sym_f.x, new_mouse_sym_f.y});
+					set_pixel_at_f(curr_chunk_hash, Vec2f64{new_mouse_sym_f.x, new_mouse_sym_f.y}, is_draw);
 				}
 				else if(fabs(mouse_sym_delta_f.x) >= fabs(mouse_sym_delta_f.y))
 				{
@@ -486,13 +520,13 @@ int main(int argc, char *argv[]) {
 					for(f64 x = new_mouse_sym_f.x; x <= old_mouse_sym_f.x; x++)
 					{
 						f64 y = r*(x - new_mouse_sym_f.x) + new_mouse_sym_f.y;
-						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y});
+						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y}, is_draw);
 					}
 					
 					for(f64 x = old_mouse_sym_f.x; x <= new_mouse_sym_f.x; x++)
 					{
 						f64 y = r*(x - old_mouse_sym_f.x) + old_mouse_sym_f.y;
-						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y});
+						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y}, is_draw);
 					}
 				}
 				else
@@ -501,13 +535,13 @@ int main(int argc, char *argv[]) {
 					for(f64 y = old_mouse_sym_f.y; y <= new_mouse_sym_f.y; y++)
 					{
 						f64 x = r*(y - old_mouse_sym_f.y) + old_mouse_sym_f.x;
-						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y});
+						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y}, is_draw);
 					}
 					
 					for(f64 y = new_mouse_sym_f.y; y <= old_mouse_sym_f.y; y++)
 					{
 						f64 x = r*(y - new_mouse_sym_f.y) + new_mouse_sym_f.x;
-						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y});
+						set_pixel_at_f(curr_chunk_hash, Vec2f64{x, y}, is_draw);
 					}
 				}
 			}
@@ -515,8 +549,8 @@ int main(int argc, char *argv[]) {
 			old_mouse_pos = new_mouse_pos;
 		} 
 		
-		f64 sym_pixels_w = WINDOW_WIDTH / zoom;
-		f64 sym_pixels_h = WINDOW_HEIGHT / zoom;
+		f64 sym_pixels_w = window_size.x / zoom;
+		f64 sym_pixels_h = window_size.y / zoom;
 
 		Vec2i sym_top = {0};
 		sym_top.x = (i32) floor(sym_center.x - sym_pixels_w/2);
@@ -531,10 +565,13 @@ int main(int argc, char *argv[]) {
 		bot_chunk.x += 1;
 		bot_chunk.y += 1;
 
-		if(UPDATE_SCREEN)
+		if((clock_s() - last_screen_update_clock)*1000 >= TARGET_FRAME_TIME && UPDATE_SCREEN)
+		{
 			update_screen(top_chunk, bot_chunk, sym_center, screen_center, zoom, curr_chunk_hash, chunk_texture, clear_chunk_texture1, clear_chunk_texture2, renderer);
+			last_screen_update_clock = clock_s();
+		}
 
-		if((clock_s() - last_update_clock)*1000 >= TARGET_MS && paused == false && UPDATE_SYMULATION)
+		if((clock_s() - last_sym_update_clock)*1000 >= symulation_time && paused == false && UPDATE_SYMULATION)
 		{
 			PERF_COUNTER("sym update");
 			f64 clock_update = clock_s();
@@ -685,7 +722,7 @@ int main(int argc, char *argv[]) {
 			next_chunk_hash = temp;
 			clear_chunk_hash(next_chunk_hash);
 
-			last_update_clock = clock_s();	
+			last_sym_update_clock = clock_s();	
 			//printf("update time: %lf\n", clock_s() - clock_update);
 		}
 
@@ -753,14 +790,17 @@ bool get_at(const Chunk* chunk, Vec2i pos)
 	return (chunk->data[pos.y + 1] & bit) > 0;
 }
 
-void set_at(Chunk* chunk, Vec2i pos)
+void set_at(Chunk* chunk, Vec2i pos, bool to)
 {
 	assert(-1 <= pos.x && pos.x < CHUNK_SIZE + 1);
 	assert(-1 <= pos.y && pos.y < CHUNK_SIZE + 1);
 
 	u64 bit = (u64) 1 << (pos.x + 1);
 	
-	chunk->data[pos.y + 1] |= bit;
+	if(to)
+		chunk->data[pos.y + 1] |= bit;
+	else
+		chunk->data[pos.y + 1] &= ~bit;
 }
 
 u64 hash64(u64 value) 
@@ -835,7 +875,7 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 		while(new_capacity < max)
 			new_capacity *= 2;
 		
-		printf("rehash to %d! %d bytes \n", (int) new_capacity, (int) (new_capacity * sizeof(Hash_Slot)));
+		printf("... rehash to %lld B \n", (long long) (new_capacity * sizeof(Hash_Slot)));
 		//Allocate new slots 
 		Hash_Slot* new_hash = (Hash_Slot*) calloc(new_capacity * sizeof(Hash_Slot), new_capacity * sizeof(Hash_Slot));
 		if(new_hash == nullptr)
@@ -891,7 +931,7 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 			abort();
 		}
 
-		printf("realloc to size %d to bytes %lld\n", (int) new_capacity, (long long) new_capacity*sizeof(Chunk));
+		printf("... realloc to %lld B\n", (long long) new_capacity*sizeof(Chunk));
 
 		chunk_hash->chunks = new_chunks;
 		chunk_hash->chunk_capacity = new_capacity;
