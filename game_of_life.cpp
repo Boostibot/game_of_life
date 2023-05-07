@@ -18,6 +18,16 @@
 #define CLEAR_COLOR_1 0x111111FF
 #define CLEAR_COLOR_2 0x070707FF
 
+
+#define CLEAR_COLOR_ACTIVE_1 0x221111FF
+#define CLEAR_COLOR_ACTIVE_2 0x140707FF
+
+#define CLEAR_COLOR_STABLE_1 0x112211FF
+#define CLEAR_COLOR_STABLE_2 0x071407FF
+
+#define CLEAR_COLOR_OSCILATING_1 0x111122FF
+#define CLEAR_COLOR_OSCILATING_2 0x070714FF
+
 #define UPDATE_SCREEN		true
 #define UPDATE_SYMULATION	true
 #define UPDATE_INPUT		true
@@ -74,10 +84,19 @@ Vec2i vec_sub(Vec2i a, Vec2i b);
 Vec2i vec_mul(i32 a, Vec2i b);
 bool vec_equal(Vec2i a, Vec2i b);
 
+enum Chunk_State
+{
+	CHUNK_STATE_INACTIVE = 0,
+	CHUNK_STATE_STABLE = 1,
+	CHUNK_STATE_OSCILATING = 2,
+	CHUNK_STATE_ACTIVE = 3,
+};
+
 //Chunk helpers
 struct Chunk
 {
 	Vec2i pos;
+	Chunk_State state;
 	u64 data[64];
 };
 
@@ -261,6 +280,7 @@ void set_pixel_at(Chunk_Hash* chunk_hash, Vec2i sym_pos, bool to = true){
 	i32 chunk_i = insert_chunk(chunk_hash, place_at_chunk);
 	Chunk* chunk = get_chunk(chunk_hash, chunk_i);
 	set_at(chunk, place_at_pixel, to);
+	chunk->state = CHUNK_STATE_ACTIVE;
 
 	if(to)
 	{
@@ -296,10 +316,39 @@ void draw_chunk(Chunk* chunk, Vec2i chunk_pos_sym, Vec2f64 sym_center, Vec2i scr
 	Vec2i screen_size = vec_sub(screen_pos_bot, screen_pos_top);
 
 	SDL_Texture* clear_tex = clear_tex1;
-	u32 clear_color = CLEAR_COLOR_1;
+	u32 clear_color1 = 0;
+	u32 clear_color2 = 0;
+
+	if(chunk != nullptr)
+	{
+		switch(chunk->state)
+		{
+			case CHUNK_STATE_ACTIVE:
+				clear_color1 = CLEAR_COLOR_ACTIVE_1;
+				clear_color2 = CLEAR_COLOR_ACTIVE_2;
+				break;
+				
+			case CHUNK_STATE_OSCILATING:
+				clear_color1 = CLEAR_COLOR_OSCILATING_1;
+				clear_color2 = CLEAR_COLOR_OSCILATING_2;
+				break;
+				
+			case CHUNK_STATE_STABLE:
+				clear_color1 = CLEAR_COLOR_STABLE_1;
+				clear_color2 = CLEAR_COLOR_STABLE_2;
+				break;
+				
+			case CHUNK_STATE_INACTIVE:
+				clear_color1 = CLEAR_COLOR_1;
+				clear_color2 = CLEAR_COLOR_2;
+				break;
+		}
+	}
+
+	u32 clear_color = clear_color1;
 	if((chunk_pos_sym.y % 2 + chunk_pos_sym.x) % 2)
 	{
-		clear_color = CLEAR_COLOR_2;
+		clear_color = clear_color2;
 		clear_tex = clear_tex2;
 	}
 	
@@ -349,6 +398,18 @@ void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i s
 	SDL_RenderPresent(renderer);
 };
 
+
+Vec2i get_mouse_pos(u32* state = nullptr)
+{
+	int x = 0;
+	int y = 0;
+	u32 local_state = (i32) SDL_GetMouseState(&x, &y);
+	if(state != nullptr)
+		*state = local_state;
+
+	return {x, y};
+}
+
 int main(int argc, char *argv[]) {
 
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
@@ -394,12 +455,17 @@ int main(int argc, char *argv[]) {
 	}
 
 	//We keep two hashes and swap between them on every uodate
-	Chunk_Hash chunk_hash1 = create_chunk_hash();
-	Chunk_Hash chunk_hash2 = create_chunk_hash();
-	Chunk empty_chunks[9] = {0};
+	#define CHUNK_HASHES_COUNT 4
+	Chunk_Hash chunk_hashes[CHUNK_HASHES_COUNT] = {};
+	for(i32 i = 0; i < CHUNK_HASHES_COUNT; i++)
+		chunk_hashes[i] = create_chunk_hash();
 
-	Chunk_Hash* curr_chunk_hash = &chunk_hash1;
-	Chunk_Hash* next_chunk_hash = &chunk_hash2;
+	Chunk empty_chunks[9] = {0};
+	
+	i64 generation = 0;
+	Chunk_Hash* prev_chunk_hash  = &chunk_hashes[(generation + 1) % CHUNK_HASHES_COUNT];
+	Chunk_Hash* curr_chunk_hash  = &chunk_hashes[(generation + 2) % CHUNK_HASHES_COUNT];
+	Chunk_Hash* next_chunk_hash  = &chunk_hashes[(generation + 3) % CHUNK_HASHES_COUNT];
 
 	// main loop
 	f64 zoom = 3.0;
@@ -426,7 +492,6 @@ int main(int argc, char *argv[]) {
 
 	bool paused = false;
 
-	i64 generation = 0;
 
 	while(true) 
 	{
@@ -579,6 +644,7 @@ int main(int argc, char *argv[]) {
 		if((clock_s() - last_sym_update_clock)*1000 >= symulation_time && paused == false && UPDATE_SYMULATION)
 		{
 			generation++;
+			clear_chunk_hash(next_chunk_hash);
 
 			PERF_COUNTER("sym update");
 			f64 clock_update = clock_s();
@@ -713,6 +779,14 @@ int main(int argc, char *argv[]) {
 					}
 				}
 
+				const auto compare_chunks = [&](Chunk* a, Chunk* b){
+					u64 result = 0;
+					for(i32 i = 0; i < CHUNK_SIZE; i++)
+						result |= (a->data[1 + i] & CONTENT_BITS) ^ (b->data[1 + i] & CONTENT_BITS);
+					
+					return result == 0;
+				};
+
 				u64 acummulated = 0;
 				for(i32 i = 0; i < CHUNK_SIZE; i++)
 					acummulated |= new_chunk.data[1 + i] & CONTENT_BITS;
@@ -721,6 +795,16 @@ int main(int argc, char *argv[]) {
 				if(acummulated != 0)
 				{
 					PERF_COUNTER("neighbour add");
+					new_chunk.state = CHUNK_STATE_ACTIVE;
+					Chunk* prev = get_chunk_or(prev_chunk_hash, chunk->pos, empty_chunks);
+
+					if(compare_chunks(&new_chunk, chunk))
+					{
+						new_chunk.state = CHUNK_STATE_STABLE;
+					}
+					else if(compare_chunks(&new_chunk, prev))
+						new_chunk.state = CHUNK_STATE_OSCILATING;
+
 					i32 curr_i = insert_chunk(next_chunk_hash, chunk->pos);
 					*get_chunk(next_chunk_hash, curr_i) = new_chunk;
 					
@@ -731,28 +815,26 @@ int main(int argc, char *argv[]) {
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  0}));
 
 					//top bot
-					if(chunk->data[1] & CONTENT_BITS)
+					if(new_chunk.data[1] & CONTENT_BITS)
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  -1}));
-					if(chunk->data[CHUNK_SIZE] & CONTENT_BITS)
+					if(new_chunk.data[CHUNK_SIZE] & CONTENT_BITS)
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  1}));
 						
 					//diagonals - there is only very small chence these will get added
-					if(get_at(chunk, Vec2i{0, 0}))
+					if(get_at(&new_chunk, Vec2i{0, 0}))
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}));
-					if(get_at(chunk, Vec2i{0, CHUNK_SIZE - 1}))
+					if(get_at(&new_chunk, Vec2i{0, CHUNK_SIZE - 1}))
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}));
-					if(get_at(chunk, Vec2i{CHUNK_SIZE - 1, 0}))
+					if(get_at(&new_chunk, Vec2i{CHUNK_SIZE - 1, 0}))
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  -1}));
-					if(get_at(chunk, Vec2i{CHUNK_SIZE - 1, CHUNK_SIZE - 1}))
+					if(get_at(&new_chunk, Vec2i{CHUNK_SIZE - 1, CHUNK_SIZE - 1}))
 						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  1}));
 				}
 			}
-
-			//Swap chunk hashes
-			Chunk_Hash* temp = curr_chunk_hash;
-			curr_chunk_hash = next_chunk_hash;
-			next_chunk_hash = temp;
-			clear_chunk_hash(next_chunk_hash);
+			
+			prev_chunk_hash = &chunk_hashes[(generation + 1) % CHUNK_HASHES_COUNT];
+			curr_chunk_hash = &chunk_hashes[(generation + 2) % CHUNK_HASHES_COUNT];
+			next_chunk_hash = &chunk_hashes[(generation + 3) % CHUNK_HASHES_COUNT];
 
 			last_sym_update_clock = clock_s();	
 			//printf("update time: %lf\n", clock_s() - clock_update);
@@ -768,12 +850,13 @@ int main(int argc, char *argv[]) {
 	SDL_DestroyTexture(chunk_texture);
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(window);
-	destroy_chunk_hash(&chunk_hash1);
-	destroy_chunk_hash(&chunk_hash2);
 	
+	for(i32 i = 0; i < CHUNK_HASHES_COUNT; i++)
+		destroy_chunk_hash(&chunk_hashes[i]);
 
+	printf("total time: %lf\n", clock_s());
 	printf("generations: %d\n", (int) generation);
-	printf("total time: %lf\n generations/s: %lf", clock_s(), generation / clock_s());
+	printf("generations/s: %lf\n", generation / clock_s());
 	for(isize i = 0; i < MAX_PERF_COUNTERS; i++)
 	{
 		if(perf_counters[i].function != nullptr)
@@ -858,18 +941,18 @@ bool is_power_of_two(i32 n)
     return (n>0 && ((n & (n-1)) == 0));
 }
 
-enum Chunk_State
+enum Chunk_Hash_Flag
 {
 	CHUNK_EMPTY = 0,
 	CHUNK_GREAVESTONE = 1,
-	CHUNK_STATE_OFFSET = 2
+	CHUNK_HASH_FLAG_OFFSET = 2
 };
 
 struct Hash_Slot
 {
 	Vec2i pos;
 
-	//Index of the given chunk in the chunk array + 2 (CHUNK_STATE_OFFSET).
+	//Index of the given chunk in the chunk array + 2 (CHUNK_HASH_FLAG_OFFSET).
 	//0 means this slot is empty
 	//1 means this slot is gravestone
 	uint32_t chunk;
@@ -925,11 +1008,11 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 		{
 			//skip empty or dead
 			Hash_Slot* curr = &chunk_hash->hash[i];
-			if(curr->chunk < CHUNK_STATE_OFFSET)
+			if(curr->chunk < CHUNK_HASH_FLAG_OFFSET)
 				continue;
             
 			//hash the non empty entry
-			u64 at = curr->chunk - CHUNK_STATE_OFFSET;
+			u64 at = curr->chunk - CHUNK_HASH_FLAG_OFFSET;
 			u64 curr_splat = splat(curr->pos);
 			u64 hash = hash64(curr_splat);
 
@@ -989,16 +1072,17 @@ i32 insert_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 	{
 		assert(counter ++ < chunk_hash->hash_capacity && "there must be an empty slot!");
 		if(vec_equal(chunk_hash->hash[i].pos, pos))
-			return (i32) chunk_hash->hash[i].chunk - CHUNK_STATE_OFFSET;
+			return (i32) chunk_hash->hash[i].chunk - CHUNK_HASH_FLAG_OFFSET;
 	}
 
 	//Push back the new chunk
 	assert(chunk_hash->chunk_size < chunk_hash->chunk_capacity);
 	chunk_hash->chunks[chunk_hash->chunk_size] = Chunk{0};
 	chunk_hash->chunks[chunk_hash->chunk_size].pos = pos;
-	
+	chunk_hash->chunks[chunk_hash->chunk_size].state = CHUNK_STATE_INACTIVE;
+
 	//Link it in the hash
-	chunk_hash->hash[i].chunk = (uint32_t) chunk_hash->chunk_size + CHUNK_STATE_OFFSET;
+	chunk_hash->hash[i].chunk = (uint32_t) chunk_hash->chunk_size + CHUNK_HASH_FLAG_OFFSET;
 	chunk_hash->hash[i].pos = pos;
 
 	chunk_hash->chunk_size ++;
@@ -1024,7 +1108,7 @@ i32 find_chunk(Chunk_Hash* chunk_hash, Vec2i pos)
 	{
 		assert(counter ++ < chunk_hash->hash_capacity && "there must be an empty slot!");
 		if(vec_equal(chunk_hash->hash[i].pos, pos))
-			return chunk_hash->hash[i].chunk - CHUNK_STATE_OFFSET;
+			return chunk_hash->hash[i].chunk - CHUNK_HASH_FLAG_OFFSET;
 	}
 
 	return -1;
