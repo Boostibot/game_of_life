@@ -140,8 +140,14 @@
     <ClCompile Include="game_of_life.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="chunk_hash.h" />
+    <ClInclude Include="load.h" />
     <ClInclude Include="new.h" />
     <ClInclude Include="old.h" />
+    <ClInclude Include="parallel.h" />
+    <ClInclude Include="temp.h" />
+    <ClInclude Include="time.h" />
+    <ClInclude Include="types.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
