@@ -20,12 +20,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="old.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="new.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="time.h">
       <Filter>Header Files</Filter>
     </ClInclude>

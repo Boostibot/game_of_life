@@ -10,19 +10,15 @@
 #include "chunk_hash.h"
 #include "time.h"
 
-//#define DISABLE_PAR_FOR
-#include "parallel.h"
+//#include "parallel.h"
 
-#define MINIMAP_WIDTH 30
-#define MINIMAP_HEIGHT 30
-#define WINDOW_WIDTH 1200
-#define WINDOW_HEIGHT 700
-#define TARGET_FRAME_TIME 16.0
-#define DEF_SYM_TIME 0.0
+#define TARGET_FRAME_TIME	16.0
+#define DEF_WINDOW_WIDTH	1200
+#define DEF_WINDOW_HEIGHT	700
+#define DEF_SYM_TIME		30.0
 
-#define CLEAR_COLOR_1 0x111111FF
-#define CLEAR_COLOR_2 0x070707FF
-
+#define CLEAR_COLOR_1		 0x111111FF
+#define CLEAR_COLOR_2		 0x070707FF
 #define CLEAR_COLOR_ACTIVE_1 0x221111FF
 #define CLEAR_COLOR_ACTIVE_2 0x140707FF
 
@@ -30,11 +26,10 @@
 #define UPDATE_SYMULATION	true
 #define UPDATE_INPUT		true
 
-#define ZOOM_SPEED_FACTOR					1.02
-#define SYM_INCREASE_SPEED_FACTOR			5000
-#define SYM_INCREASE_SPEED_FACTOR_FRACTIOM	1.015
+#define INPUT_FACTOR_ZOOM						1.02
+#define INPUT_FACTOR_INCREASE_SPEED				5000
+#define INPUT_FACTOR_INCREASE_SPEED_FRACTION	1.015
 
-#define SCREEN_RENDER_THREADS 8
 #define CHUNK_SIZE 61
 
 bool get_cell_in_chunk(const Chunk* chunk, Vec2i pos)
@@ -188,6 +183,25 @@ void draw_chunk(Chunk* chunk, Vec2i chunk_pos_sym, Vec2f64 sym_center, Vec2i scr
 };
 
 
+
+void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i screen_center, f64 zoom, Chunk_Hash* chunk_hash, SDL_Texture* chunk_texture, SDL_Texture* clear_tex1, SDL_Texture* clear_tex2, SDL_Renderer* renderer)
+{
+	PERF_COUNTER();
+	SDL_RenderClear(renderer);
+	for(i32 chunk_y = top_chunk.y; chunk_y < bot_chunk.y; chunk_y++)
+	{
+		for(i32 chunk_x = top_chunk.x; chunk_x < bot_chunk.x; chunk_x++)
+		{
+			Vec2i chunk_pos_sym = Vec2i{chunk_x, chunk_y};
+			Chunk* chunk = get_chunk_or(chunk_hash, chunk_pos_sym, nullptr);
+			draw_chunk(chunk, chunk_pos_sym, sym_center, screen_center, zoom, chunk_texture, clear_tex1, clear_tex2, renderer);
+		}
+	}
+	SDL_RenderPresent(renderer);
+};
+
+#if 0
+#define SCREEN_RENDER_THREADS 8
 void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i screen_center, f64 zoom, Chunk_Hash* chunk_hash, 
 	SDL_Texture* xchunk_strip, SDL_Texture* ychunk_strip, SDL_Renderer* renderer)
 {
@@ -205,7 +219,7 @@ void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i s
 
 			i32 to_chunk_x = from_chunk_x + SCREEN_RENDER_THREADS;
 			if(to_chunk_x > bot_chunk.x)
-				to_chunk_x = bot_chunk.x;
+				to_chunk_x = bot_chunk.x + 1;
 
 			Vec2f64 sym_pos_top = {
 				(f64) from_chunk_x * CHUNK_SIZE, 
@@ -257,6 +271,7 @@ void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i s
 	}
 	SDL_RenderPresent(renderer);
 };
+#endif
 
 Vec2i get_mouse_pos(u32* state = nullptr)
 {
@@ -274,21 +289,48 @@ int main(int argc, char *argv[]) {
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
 			return 1;
 
-	SDL_Window* window = SDL_CreateWindow("Game of Life", 100, 100, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+	SDL_Window* window = SDL_CreateWindow("Game of Life", 100, 100, 
+			DEF_WINDOW_WIDTH, 
+			DEF_WINDOW_HEIGHT, 
+			SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+
 	SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 	
-	
-	SDL_Texture* xstrip_chunk_texture = SDL_CreateTexture(renderer,
-                           SDL_PIXELFORMAT_BGRA8888,
-                           SDL_TEXTUREACCESS_STREAMING, 
-                           CHUNK_SIZE*SCREEN_RENDER_THREADS,
-                           CHUNK_SIZE);
-	
-	SDL_Texture* ystrip_chunk_texture = SDL_CreateTexture(renderer,
+	SDL_Texture* chunk_texture = SDL_CreateTexture(renderer,
                            SDL_PIXELFORMAT_BGRA8888,
                            SDL_TEXTUREACCESS_STREAMING, 
                            CHUNK_SIZE,
-                           CHUNK_SIZE*SCREEN_RENDER_THREADS);
+                           CHUNK_SIZE);
+						   
+	SDL_Texture* clear_chunk_texture1 = SDL_CreateTexture(renderer,
+                           SDL_PIXELFORMAT_BGRA8888,
+                           SDL_TEXTUREACCESS_STREAMING, 
+                           CHUNK_SIZE,
+                           CHUNK_SIZE);
+						   
+	SDL_Texture* clear_chunk_texture2 = SDL_CreateTexture(renderer,
+                           SDL_PIXELFORMAT_BGRA8888,
+                           SDL_TEXTUREACCESS_STREAMING, 
+                           CHUNK_SIZE,
+                           CHUNK_SIZE);
+
+	{
+		uint32_t* pixels1 = nullptr;
+		uint32_t* pixels2 = nullptr;
+		int pitch = 0;
+		SDL_LockTexture(clear_chunk_texture1, NULL, (void**) &pixels1, &pitch);
+		SDL_LockTexture(clear_chunk_texture2, NULL, (void**) &pixels2, &pitch);
+				
+		for(i32 j = 0; j < CHUNK_SIZE; j++)
+			for(i32 i = 0; i < CHUNK_SIZE; i ++)
+			{
+				pixels1[i + j*CHUNK_SIZE] = CLEAR_COLOR_1;
+				pixels2[i + j*CHUNK_SIZE] = CLEAR_COLOR_2;
+			}
+		
+		SDL_UnlockTexture(clear_chunk_texture1);
+		SDL_UnlockTexture(clear_chunk_texture2);
+	}
 				
 
 	//We keep two hashes and swap between them on every uodate
@@ -307,7 +349,7 @@ int main(int argc, char *argv[]) {
 	f64 zoom = 3.0;
 	f64 symulation_time = DEF_SYM_TIME;
 	Vec2f64 sym_center = {0.0, 0.0};
-	Vec2i window_size = {WINDOW_WIDTH, WINDOW_HEIGHT};
+	Vec2i window_size = {DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT};
 	Vec2i screen_center = {window_size.x / 2, window_size.y / 2};
 	
 	f64 dt = 1.0 / TARGET_FRAME_TIME * 1000;
@@ -334,15 +376,15 @@ int main(int argc, char *argv[]) {
 			const u8* keayboard_state = SDL_GetKeyboardState(nullptr);
 			if (keayboard_state[SDL_SCANCODE_P]) 
 			{
-				symulation_time += SYM_INCREASE_SPEED_FACTOR*dt;
+				symulation_time += INPUT_FACTOR_INCREASE_SPEED*dt;
 				printf("new sym time: %lf ms\n", symulation_time);
 			}
 			
 			if (keayboard_state[SDL_SCANCODE_O]) 
 			{
-				f64 new_symulation_time = symulation_time - SYM_INCREASE_SPEED_FACTOR*dt;
-				if(symulation_time / SYM_INCREASE_SPEED_FACTOR_FRACTIOM > new_symulation_time)
-					symulation_time /= SYM_INCREASE_SPEED_FACTOR_FRACTIOM;
+				f64 new_symulation_time = symulation_time - INPUT_FACTOR_INCREASE_SPEED*dt;
+				if(symulation_time / INPUT_FACTOR_INCREASE_SPEED_FRACTION > new_symulation_time)
+					symulation_time /= INPUT_FACTOR_INCREASE_SPEED_FRACTION;
 				else
 					symulation_time = new_symulation_time;
 				printf("new sym time: %lf ms\n", symulation_time);
@@ -371,7 +413,7 @@ int main(int argc, char *argv[]) {
 			{
 				f64 div_by = TARGET_FRAME_TIME > 0 ? TARGET_FRAME_TIME : 1e8;
 				f64 normal_dt = 1000.0 / div_by;
-				f64 factor = ZOOM_SPEED_FACTOR;
+				f64 factor = INPUT_FACTOR_ZOOM;
 				if(dt > TARGET_FRAME_TIME)
 					factor *= normal_dt * dt;
 				if(event.wheel.y + event.wheel.x > 0)
@@ -383,7 +425,7 @@ int main(int argc, char *argv[]) {
 			u32 mouse_state = 0;
 			Vec2i new_mouse_pos = get_mouse_pos(&mouse_state);
 			Vec2i mouse_delta = vec_sub(new_mouse_pos, old_mouse_pos);
-			if(mouse_state == SDL_BUTTON_MIDDLE || mouse_state == SDL_BUTTON_RIGHT)
+			if(mouse_state == SDL_BUTTON_MIDDLE || mouse_state == SDL_BUTTON_RIGHT || keayboard_state[SDL_SCANCODE_M])
 			{
 				Vec2f64 sym_mouse_delta = {
 					(f64) mouse_delta.x / zoom,
@@ -472,7 +514,7 @@ int main(int argc, char *argv[]) {
 
 		if((clock_s() - last_screen_update_clock)*1000 >= TARGET_FRAME_TIME && UPDATE_SCREEN)
 		{
-			update_screen(top_chunk, bot_chunk, sym_center, screen_center, zoom, curr_chunk_hash, xstrip_chunk_texture, ystrip_chunk_texture, renderer);
+			update_screen(top_chunk, bot_chunk, sym_center, screen_center, zoom, curr_chunk_hash, chunk_texture, clear_chunk_texture1, clear_chunk_texture2, renderer);
 			last_screen_update_clock = clock_s();
 		}
 		

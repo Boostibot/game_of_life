@@ -142,8 +142,6 @@
   <ItemGroup>
     <ClInclude Include="chunk_hash.h" />
     <ClInclude Include="load.h" />
-    <ClInclude Include="new.h" />
-    <ClInclude Include="old.h" />
     <ClInclude Include="parallel.h" />
     <ClInclude Include="temp.h" />
     <ClInclude Include="time.h" />
