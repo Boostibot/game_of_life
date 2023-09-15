@@ -32,7 +32,7 @@
 // 0 + 0 + 1 = 1
 // 
 // This can be achived fairly easily in binary by the following piece of code
-// where oct is a pattern of bits spaced 2 appart.
+// where oct is a pattern of bits spaced 3 appart.
 // 
 //  u64 row = /* bits in a single row of our bitmap chunk*/;
 //	u64 oct = 01111111111111111111111; //..1001001 in binary
@@ -87,10 +87,10 @@
 #include <SDL/SDL.h>
 
 #define WINDOW_TITLE        "Game of Life"
-#define TARGET_FRAME_TIME	16.0
-#define DEF_WINDOW_WIDTH	1200
+#define TARGET_FRAME_TIME	16.0 /* how many times a second do we wish to refresh the screen */
+#define DEF_WINDOW_WIDTH	1200 
 #define DEF_WINDOW_HEIGHT	700
-#define DEF_SYM_TIME		30.0
+#define DEF_SYM_FREQ_MS		30.0 /* frequency of the symulation update in millisecons */
 
 #define CLEAR_COLOR_1		 0x111111FF
 #define CLEAR_COLOR_2		 0x070707FF
@@ -102,18 +102,18 @@
 #define DO_UPDATE_SYMULATION	true
 #define DO_UPDATE_INPUT			true
 
-#define INPUT_FACTOR_ZOOM						1.02
-#define INPUT_FACTOR_INCREASE_SPEED				5000
-#define INPUT_FACTOR_INCREASE_SPEED_FRACTION	1.015
+#define INPUT_FACTOR_ZOOM						1.02 /* scroll sensitivity */
+#define INPUT_FACTOR_INCREASE_SPEED				5000 /* speed increase/decrease sensitivity */
+#define INPUT_FACTOR_INCREASE_SPEED_FRACTION	1.015 /* speed increase/decrees sensitivity by scaling when INPUT_FACTOR_INCREASE_SPEED woudl result in negative*/
 
 // Enables cleanup code to run when the application exits. 
 // This is absolutely not necessary since we can just leak all resources anyway 
 // and let the OS handle our mess, but just in case
 // we want to be good programmers we can enable this. ;)
 // 
-// Reallistically only incurs delay upon closing the application.
+// Reallistically this only incurs delay upon closing the application.
 // 
-//#define DO_CLEANUP
+#define DO_CLEANUP
 
 //A single generation step of the symulation
 void game_of_life_generation_step(Chunk_Hash* curr_chunk_hash, Chunk_Hash* next_chunk_hash)
@@ -192,6 +192,8 @@ void game_of_life_generation_step(Chunk_Hash* curr_chunk_hash, Chunk_Hash* next_
 
 				assembled.data[1 + i] = (first >> OUTER) | middle | (last << OUTER);
 			}
+
+			//This is the resulting chunk in the next generation
 			Chunk new_chunk = {0};
 			new_chunk.pos = chunk->pos;
 				
@@ -222,20 +224,18 @@ void game_of_life_generation_step(Chunk_Hash* curr_chunk_hash, Chunk_Hash* next_
 						accumulators[i] = curr_accumulator;
 					}
 
-					//iterate all inner cells of the chunk
+					//iterate all inner rows of the chunk
 					for(i32 y = 1; y < OUTER; y++)
 					{
 						u64 first_sum = accumulators[y - 1] + accumulators[y];
 						u64 has_4 = first_sum & oct2;
 					
-						u64 has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
+						u64 next_row_has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
 
-						u64 is_overfull = has_4 & has_any; //the sum around has value higher or equal to 4 (if is true dies)
-						u64 complete_sum_stage_1 = ~is_overfull & first_sum;
-						u64 complete_sum_stage_2 = accumulators[y + 1];
+						u64 is_overfull = has_4 & next_row_has_any; //the sum around has value higher or equal to 4 (if is true dies)
 						u64 complete_sum = (~is_overfull & first_sum) + accumulators[y + 1];
 
-						u64 three_pattern = oct0 | oct1;
+						u64 three_pattern = oct0 | oct1; //pattern of the number 3 in binary repeating in slots of 3 bits
 						u64 four_pattern = oct2;
 
 						u64 three_check = three_pattern ^ complete_sum; //completely 0 if is three
@@ -243,11 +243,11 @@ void game_of_life_generation_step(Chunk_Hash* curr_chunk_hash, Chunk_Hash* next_
 
 						u64 is_not_three = (three_check & oct0) << 2 | (three_check & oct1) << 1 | (three_check & oct2) << 0;
 						u64 is_not_four  = (four_check & oct0) << 2 | (four_check & oct1) << 1 | (four_check & oct2) << 0;    
-						u64 is_alive     = (oct0 & (assembled.data[y] >> slot)) << 2; 
+						u64 is_current_alive = (oct0 & (assembled.data[y] >> slot)) << 2; 
 					
 						u64 is_three = ~is_not_three; 
 						u64 is_four = ~is_not_four; 
-						u64 is_next_generation_alive = (is_three | (is_alive & is_four)) & ~is_overfull;
+						u64 is_next_generation_alive = (is_three | (is_current_alive & is_four)) & ~is_overfull;
 
 						is_next_generation_alive &= oct2;
 
@@ -255,14 +255,6 @@ void game_of_life_generation_step(Chunk_Hash* curr_chunk_hash, Chunk_Hash* next_
 					}
 				}
 			}
-
-			const auto compare_chunks = [&](Chunk* a, Chunk* b){
-				u64 result = 0;
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
-					result |= (a->data[1 + i] & CONTENT_BITS) ^ (b->data[1 + i] & CONTENT_BITS);
-					
-				return result == 0;
-			};
 
 			u64 acummulated = 0;
 			for(i32 i = 0; i < CHUNK_SIZE; i++)
@@ -343,7 +335,7 @@ int main(int argc, char *argv[]) {
 	Chunk_Hash* next_chunk_hash  = &chunk_hashes[(generation + 1) % CHUNK_HASHES_COUNT];
 
 	f64 zoom = 3.0;
-	f64 symulation_time = DEF_SYM_TIME;
+	f64 symulation_time = DEF_SYM_FREQ_MS;
 	Vec2f64 sym_center = {0.0, 0.0};
 	Vec2i window_size = {DEF_WINDOW_WIDTH, DEF_WINDOW_HEIGHT};
 	Vec2i screen_center = {window_size.x / 2, window_size.y / 2};
@@ -541,10 +533,10 @@ int main(int argc, char *argv[]) {
 	printf("generations: %d\n", (int) generation);
 	printf("generations/s: %lf\n", generation / clock_s());
 
-	const Perf_Counter* perf_counters = perf_get_counters();
-	for(isize i = 0; i < MAX_PERF_COUNTERS; i++)
+	const Perf_Counter* const* perf_counters = perf_get_counters();
+	for(isize i = 0; i < perf_get_counter_count(); i++)
 	{
-		Perf_Counter counter = perf_counters[i];
+		Perf_Counter counter = *perf_counters[i];
 		if(counter.runs != 0)
 		{
 			f64 total_s = perf_counter_get_total_running_time_s(counter);

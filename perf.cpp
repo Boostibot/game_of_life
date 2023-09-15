@@ -1,12 +1,17 @@
 #include "perf.h"
 #include "time.h"
 
-static Perf_Counter perf_counters[MAX_PERF_COUNTERS] = {0};
+#ifndef MAX_PERF_COUNTERS
+#define MAX_PERF_COUNTERS 100
+#endif
 
-Perf_Counter_Executor::Perf_Counter_Executor(int64_t _index, int64_t _line, const char* _file, const char* _function, const char* _name)
+static Perf_Counter* perf_counters[MAX_PERF_COUNTERS] = {0};
+static int64_t perf_counter_count = 0;
+
+Perf_Counter_Executor::Perf_Counter_Executor(Perf_Counter* _my_counter, int64_t _line, const char* _file, const char* _function, const char* _name)
 {
 	start = perf_counter();
-	index = _index;
+	my_counter = _my_counter;
 	line = _line;
 	file = _file;
 	function = _function;
@@ -16,17 +21,31 @@ Perf_Counter_Executor::Perf_Counter_Executor(int64_t _index, int64_t _line, cons
 Perf_Counter_Executor::~Perf_Counter_Executor()
 {
 	int64_t delta = perf_counter() - start;
-	perf_counters[index].counter += delta;
-	perf_counters[index].file = file;
-	perf_counters[index].line = line;
-	perf_counters[index].function = function;
-	perf_counters[index].name = name;
-	perf_counters[index].runs += 1;
+
+	//if is a first run add itself to counters
+	//and set first run only stats
+	if(my_counter->runs == 0)
+	{
+		my_counter->file = file;
+		my_counter->line = line;
+		my_counter->function = function;
+		my_counter->name = name;
+		perf_counters[perf_counter_count++] = my_counter;
+	}
+	
+	//Add cumulative stats
+	my_counter->counter += delta;
+	my_counter->runs += 1;
 }
 
-const Perf_Counter* perf_get_counters()
+const Perf_Counter* const* perf_get_counters()
 {
 	return perf_counters;
+}
+
+int64_t perf_get_counter_count()
+{
+	return perf_counter_count;
 }
 
 double perf_counter_get_total_running_time_s(Perf_Counter counter)
