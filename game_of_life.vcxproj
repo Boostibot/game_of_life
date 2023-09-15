@@ -137,13 +137,18 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="chunk_hash.cpp" />
     <ClCompile Include="game_of_life.cpp" />
+    <ClCompile Include="load.cpp" />
+    <ClCompile Include="perf.cpp" />
+    <ClCompile Include="time.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="alloc.h" />
+    <ClInclude Include="chunk.h" />
     <ClInclude Include="chunk_hash.h" />
     <ClInclude Include="load.h" />
-    <ClInclude Include="parallel.h" />
-    <ClInclude Include="temp.h" />
+    <ClInclude Include="perf.h" />
     <ClInclude Include="time.h" />
     <ClInclude Include="types.h" />
   </ItemGroup>

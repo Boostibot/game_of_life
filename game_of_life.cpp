@@ -1,16 +1,91 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include <stdio.h>
-#include <assert.h>
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
-#include <SDL/SDL.h>
+// A proof of concept of extremely performant Game of Life (GOL) implementation.
+//
+// We represent cells as single bits and use clever bit shifts to effectlively achieve 
+// 21 wide parallelism within a single u64 number. This is more or less improvised version of SIMD.
+// (in the old days of programming this was more common thing to do).
+// We try to operate on as many bits as possible simultanously. How much is that? 
+// We will answer indirectly. How many bits do we need to represent the entire GOL algorhitm? 
+// (yes specifically GOL and NOT *any* automata of certain kind). 
+// 
+// It seems we need 4. We need to sum all adjecent pixels and then do simple comparison of 
+// the final value to determin if the cell lives. We need 4 bits because the maximum sum can be 8 (0b1000). 
+// However if we discard all values higher than 7 as those will result in dead cell anyway we need just 3!
+// (We apply some clever masking to achieve this. Even if a bit tricky its fairly straigtforward)
+//
+// Okay so we need 3 bits to do the calculation. Now how does the actual algorhitm work. Lets explain this with a pictures.
+// We are trying to determine if the middle cell lives or dies. 
+// 
+// 0   1   0
+//   -----
+// 1 | 1 | 1
+//   -----
+// 0   0   1
+//
+// To do this we first sum along each rows separately: 
+// 
+// 0 + 1 + 0 = 1
+//   -----
+// 1 + 1 + 1 = 3
+//   -----
+// 0 + 0 + 1 = 1
+// 
+// This can be achived fairly easily in binary by the following piece of code
+// where oct is a pattern of bits spaced 2 appart.
+// 
+//  u64 row = /* bits in a single row of our bitmap chunk*/;
+//	u64 oct = 01111111111111111111111; //..1001001 in binary
+//	u64 sum_every_3_bits = (oct & (row >> 0));
+//		+ (oct & (row >> 1));
+//		+ (oct & (row >> 2));
+//
+// Now all thats left to do is to sum vertically. Here however we need to be careful since we cannot sum all 3 rows due to overflow 
+// out of our 3 bits. So instead we only sum the first two and then dermine if the next addition would overflow. 
+// We then use this to detrmine if the cell is "overfull" that is if the sum is a number which kills the cell no matter the circumstance.
+//
+// We then test if the bit patterns exactly match certain values (this can be done in effect with the following):
+// 
+//  u64 pattern = /* bit pattern of 5 repeating */
+//  u64 row = /* bits in a single row of our bitmap chunk*/;
+//  u64 xored = pattern ^ row; //if are equl their XOR is everywhere 0
+//  u64 are_every_3_bits_not_equal_to_5 = (oct & (xored >> 0));
+//		| (oct & (xored >> 1));
+//		| (oct & (xored >> 2));
+//
+// /* now are_every_3_bits_not_equal_to_5 contains a set bit at the lowest adress in each oct (bit triplet) */
+//
+// Then we can test for equality simply like so:
+// 
+//  u64 are_every_3_bits_equal_to_5 = ~are_every_3_bits_not_equal_to_5;
+//
+// Then we simply compose the necessary tests together using bitwise OR, AND and NEG and we recieved every 3rd bit of the output!
+// We repeat this exact same procedure except with everything shifted down a bit to recieve every 3rd bit in the second set of the output.
+// then finally the thir as well. We or these together and this yields the final value.
+// 
+// This might look daunting (and indeed its painful to debug) but with a bit of patience its not that diffuclt to trial and error into.
+//
+// This approach is ~200x fatster than naive implementation using serial ifs, and about ~20x faster than branchless version. It can further be sped up about 4x
+// by using 256 bit SIMD registers and doing essentially the same thing wider. I was however lazy to implement this as this was fast enough for my need as the
+// current bottle neck is rendering and then hash map lookup.
 
+// Controls:
+// mouse wheel			- zoom in and out
+// mouse left			- draw
+// mouse right/middle	- pan camera
+// mouse left + D		- erase
+// SPACE				- stop/resume symulation
+// P					- increase symulation speed
+// O					- decrease symulation speed
+
+#include "chunk.h"
 #include "chunk_hash.h"
 #include "time.h"
+#include "perf.h"
+#include "alloc.h"
 
-//#include "parallel.h"
+#include <math.h>
+#include <SDL/SDL.h>
 
 #define TARGET_FRAME_TIME	16.0
 #define DEF_WINDOW_WIDTH	1200
@@ -30,40 +105,13 @@
 #define INPUT_FACTOR_INCREASE_SPEED				5000
 #define INPUT_FACTOR_INCREASE_SPEED_FRACTION	1.015
 
-#define CHUNK_SIZE 61
+//enables cleanup code to run when the application exits. Is absolutely not necessary since 
+// we can just leak all resources anyway and let the OS handle our mess, but just in case
+// we want to be good programmers ;)
+//#define DO_CLEANUP
 
-bool get_cell_in_chunk(const Chunk* chunk, Vec2i pos)
+static Vec2i get_chunk_pos(Vec2i sym_position)
 {
-	assert(-1 <= pos.x && pos.x < CHUNK_SIZE + 1);
-	assert(-1 <= pos.y && pos.y < CHUNK_SIZE + 1);
-	
-	u64 bit = (u64) 1 << (pos.x + 1);
-	
-	return (chunk->data[pos.y + 1] & bit) > 0;
-}
-
-void set_cell_in_chunk(Chunk* chunk, Vec2i pos, bool to)
-{
-	assert(-1 <= pos.x && pos.x < CHUNK_SIZE + 1);
-	assert(-1 <= pos.y && pos.y < CHUNK_SIZE + 1);
-
-	u64 bit = (u64) 1 << (pos.x + 1);
-	
-	if(to)
-		chunk->data[pos.y + 1] |= bit;
-	else
-		chunk->data[pos.y + 1] &= ~bit;
-}
-
-i32 div_round_down(i32 val, i32 div_by)
-{
-	if(val >= 0)
-		return val / div_by;
-	else
-		return (val - div_by + 1) / div_by;
-}
-	
-Vec2i get_chunk_pos(Vec2i sym_position){
 	Vec2i output = {0};
 	output.x = div_round_down(sym_position.x, CHUNK_SIZE);
 	output.y = div_round_down(sym_position.y, CHUNK_SIZE);
@@ -71,13 +119,38 @@ Vec2i get_chunk_pos(Vec2i sym_position){
 	return output;
 };
 	
-Vec2i get_cell_in_chunk_pos(Vec2i sym_position){
+static Vec2i chunk_get_cell_pos(Vec2i sym_position)
+{
 	Vec2i output = {0};
 	output.x = (sym_position.x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
 	output.y = (sym_position.y % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
 
 	return output;
 };
+
+static void set_cell_at(Chunk_Hash* chunk_hash, Vec2i sym_pos, bool to)
+{
+	Vec2i place_at_chunk = get_chunk_pos(sym_pos);
+	Vec2i place_at_pixel = chunk_get_cell_pos(sym_pos);
+
+	i32 chunk_i = chunk_hash_insert(chunk_hash, place_at_chunk);
+	Chunk* chunk = chunk_hash_at(chunk_hash, chunk_i);
+	chunk_set_cell(chunk, place_at_pixel, to);
+
+	//@TODO: careful insertion of only the chunks we need!
+	if(to)
+	{
+		const Vec2i directions[8] = {
+			{-1, -1},{0, -1},{1, -1},
+			{-1, 0}, /* X */ {1,  0},
+			{-1,  1},{0,  1},{1,  1},
+		};
+
+		for(i32 i = 0; i < 8; i++)
+			chunk_hash_insert(chunk_hash, vec_add(directions[i], place_at_chunk));
+	}
+};
+
 
 Vec2i to_screen_pos(Vec2f64 sym_position, Vec2f64 sym_center, Vec2i screen_center, f64 zoom){
 	Vec2i screen_offset = {
@@ -99,29 +172,6 @@ Vec2f64 to_sym_pos(Vec2i screen_position, Vec2f64 sym_center, Vec2i screen_cente
 
 	return sym_position;
 };
-
-void set_cell_at(Chunk_Hash* chunk_hash, Vec2i sym_pos, bool to = true){
-	Vec2i place_at_chunk = get_chunk_pos(sym_pos);
-	Vec2i place_at_pixel = get_cell_in_chunk_pos(sym_pos);
-
-	i32 chunk_i = insert_chunk(chunk_hash, place_at_chunk);
-	Chunk* chunk = get_chunk(chunk_hash, chunk_i);
-	set_cell_in_chunk(chunk, place_at_pixel, to);
-
-	//@TODO: careful insertion of only the chunks we need!
-	if(to)
-	{
-		const Vec2i directions[8] = {
-			{-1, -1},{0, -1},{1, -1},
-			{-1, 0},         {1,  0},
-			{-1,  1},{0,  1},{1,  1},
-		};
-
-		for(i32 i = 0; i < 8; i++)
-			insert_chunk(chunk_hash, vec_add(directions[i], place_at_chunk));
-	}
-};
-	
 
 SDL_Rect get_screen_rect(Vec2f64 sym_pos_top, Vec2f64 sym_pos_bot, Vec2f64 sym_center, Vec2i screen_center, f64 zoom)
 {
@@ -158,20 +208,20 @@ void draw_chunk(Chunk* chunk, Vec2i chunk_pos_sym, Vec2f64 sym_center, Vec2i scr
 		clear_tex = clear_tex2;
 	}
 
-	if(chunk == nullptr)
+	if(chunk == NULL)
 	{
 		SDL_RenderCopy(renderer, clear_tex, NULL, &dest_rect);
 		return;
 	}
 
-	uint32_t* pixels = nullptr;
+	uint32_t* pixels = NULL;
 	int pitch = 0;
 	SDL_LockTexture(chunk_texture, NULL, (void**) &pixels, &pitch);
 				
 	for(i32 j = 0; j < CHUNK_SIZE; j++)
 		for(i32 i = 0; i < CHUNK_SIZE; i ++)
 		{
-			if(get_cell_in_chunk(chunk, Vec2i{i, j}))
+			if(chunk_get_cell(chunk, vec(i, j)))
 				pixels[i + j*CHUNK_SIZE] = (uint32_t) -1; 
 			else
 				pixels[i + j*CHUNK_SIZE] = clear_color;
@@ -192,93 +242,20 @@ void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i s
 	{
 		for(i32 chunk_x = top_chunk.x; chunk_x < bot_chunk.x; chunk_x++)
 		{
-			Vec2i chunk_pos_sym = Vec2i{chunk_x, chunk_y};
-			Chunk* chunk = get_chunk_or(chunk_hash, chunk_pos_sym, nullptr);
+			Vec2i chunk_pos_sym = vec(chunk_x, chunk_y);
+			Chunk* chunk = chunk_hash_get_or(chunk_hash, chunk_pos_sym, NULL);
 			draw_chunk(chunk, chunk_pos_sym, sym_center, screen_center, zoom, chunk_texture, clear_tex1, clear_tex2, renderer);
 		}
 	}
 	SDL_RenderPresent(renderer);
 };
 
-#if 0
-#define SCREEN_RENDER_THREADS 8
-void update_screen(Vec2i top_chunk, Vec2i bot_chunk, Vec2f64 sym_center, Vec2i screen_center, f64 zoom, Chunk_Hash* chunk_hash, 
-	SDL_Texture* xchunk_strip, SDL_Texture* ychunk_strip, SDL_Renderer* renderer)
-{
-	PERF_COUNTER();
-
-	SDL_RenderClear(renderer);
-	for(i32 chunk_y = top_chunk.y; chunk_y < bot_chunk.y; chunk_y++)
-	{
-		for(i32 from_chunk_x = top_chunk.x; from_chunk_x < bot_chunk.x; from_chunk_x += SCREEN_RENDER_THREADS)
-		{
-			u32* pixels = nullptr;
-			int byte_pitch = 0;
-			SDL_LockTexture(xchunk_strip, NULL, (void**) &pixels, &byte_pitch);
-			u32 pixel_pitch = byte_pitch / sizeof(u32);
-
-			i32 to_chunk_x = from_chunk_x + SCREEN_RENDER_THREADS;
-			if(to_chunk_x > bot_chunk.x)
-				to_chunk_x = bot_chunk.x + 1;
-
-			Vec2f64 sym_pos_top = {
-				(f64) from_chunk_x * CHUNK_SIZE, 
-				(f64) chunk_y * CHUNK_SIZE
-			};
-			Vec2f64 sym_pos_bot = {
-				(f64) (to_chunk_x) * CHUNK_SIZE, 
-				(f64) (chunk_y + 1) * CHUNK_SIZE
-			};
-
-			SDL_Rect dest_rect = get_screen_rect(sym_pos_top, sym_pos_bot, sym_center, screen_center, zoom);
-			parallel_for(from_chunk_x, to_chunk_x, [&](i32 chunk_x){
-				
-				Chunk* chunk = get_chunk_or(chunk_hash, Vec2i{chunk_x, chunk_y}, nullptr);
-				u32 clear_color = CLEAR_COLOR_ACTIVE_1;
-				if((chunk_y % 2 + chunk_x) % 2)
-					clear_color = CLEAR_COLOR_ACTIVE_2;
-				
-				u32 chunk_offset = (chunk_x - from_chunk_x);
-				u32* chunk_pixels = pixels + chunk_offset * CHUNK_SIZE ;
-				if(chunk == nullptr)
-				{
-					for(i32 y = 0; y < CHUNK_SIZE; y++)
-					{
-						u32* row = chunk_pixels + y*pixel_pitch;
-						for(i32 x = 0; x < CHUNK_SIZE; x ++)
-							row[x] = clear_color;
-					}
-				}
-				else
-				{
-					for(i32 y = 0; y < CHUNK_SIZE; y++)
-					{
-						u32* row = chunk_pixels + y*pixel_pitch;
-						for(i32 x = 0; x < CHUNK_SIZE; x ++)
-						{
-							if(get_cell_in_chunk(chunk, Vec2i{x, y}))
-								row[x] = (uint32_t) -1; 
-							else
-								row[x] = clear_color;
-						}
-					}
-				}
-			});
-			
-			SDL_UnlockTexture(xchunk_strip);
-			SDL_RenderCopy(renderer, xchunk_strip, NULL, &dest_rect);
-		}
-	}
-	SDL_RenderPresent(renderer);
-};
-#endif
-
-Vec2i get_mouse_pos(u32* state = nullptr)
+Vec2i get_mouse_pos(u32* state)
 {
 	int x = 0;
 	int y = 0;
 	u32 local_state = (i32) SDL_GetMouseState(&x, &y);
-	if(state != nullptr)
+	if(state != NULL)
 		*state = local_state;
 
 	return {x, y};
@@ -314,9 +291,11 @@ int main(int argc, char *argv[]) {
                            CHUNK_SIZE,
                            CHUNK_SIZE);
 
+	
+	//Initialize the two textures to solid color
 	{
-		uint32_t* pixels1 = nullptr;
-		uint32_t* pixels2 = nullptr;
+		uint32_t* pixels1 = NULL;
+		uint32_t* pixels2 = NULL;
 		int pitch = 0;
 		SDL_LockTexture(clear_chunk_texture1, NULL, (void**) &pixels1, &pitch);
 		SDL_LockTexture(clear_chunk_texture2, NULL, (void**) &pixels2, &pitch);
@@ -337,7 +316,7 @@ int main(int argc, char *argv[]) {
 	#define CHUNK_HASHES_COUNT 2
 	Chunk_Hash chunk_hashes[CHUNK_HASHES_COUNT] = {};
 	for(i32 i = 0; i < CHUNK_HASHES_COUNT; i++)
-		chunk_hashes[i] = create_chunk_hash();
+		chunk_hash_init(&chunk_hashes[i]);
 
 	Chunk empty_chunks[9] = {0};
 	
@@ -359,10 +338,11 @@ int main(int argc, char *argv[]) {
 
 	for(i32 x = -250; x < 250; x++)
 		for(i32 y = -250; y < 250; y++)
-			set_cell_at(curr_chunk_hash, Vec2i{x, y});
+			set_cell_at(curr_chunk_hash, vec(x, y), true);
 
-	Vec2i old_mouse_pos = get_mouse_pos();
+	Vec2i old_mouse_pos = get_mouse_pos(NULL);
 	bool paused = false;
+
 
 	while(true) 
 	{
@@ -373,7 +353,7 @@ int main(int argc, char *argv[]) {
 			if(event.type == SDL_QUIT)
 				break;
 				
-			const u8* keayboard_state = SDL_GetKeyboardState(nullptr);
+			const u8* keayboard_state = SDL_GetKeyboardState(NULL);
 			if (keayboard_state[SDL_SCANCODE_P]) 
 			{
 				symulation_time += INPUT_FACTOR_INCREASE_SPEED*dt;
@@ -521,7 +501,7 @@ int main(int argc, char *argv[]) {
 		if((clock_s() - last_sym_update_clock)*1000 >= symulation_time && paused == false && UPDATE_SYMULATION)
 		{
 			generation++;
-			clear_chunk_hash(next_chunk_hash);
+			chunk_hash_clear(next_chunk_hash);
 
 			PERF_COUNTER("sym update");
 			f64 clock_update = clock_s();
@@ -530,172 +510,177 @@ int main(int argc, char *argv[]) {
 				PERF_COUNTER("single chunk");
 				Chunk* chunk = &curr_chunk_hash->chunks[i];
 				
-				Chunk* top   = nullptr;
-				Chunk* bot   = nullptr;
-				Chunk* left  = nullptr;
-				Chunk* right = nullptr;
+				Chunk* top   = NULL;
+				Chunk* bot   = NULL;
+				Chunk* left  = NULL;
+				Chunk* right = NULL;
 				
-				Chunk* top_l = nullptr;
-				Chunk* top_r = nullptr;
-				Chunk* bot_l = nullptr;
-				Chunk* bot_r = nullptr;
+				Chunk* top_l = NULL;
+				Chunk* top_r = NULL;
+				Chunk* bot_l = NULL;
+				Chunk* bot_r = NULL;
 
 				{
 					PERF_COUNTER("neighbour gather");
 					//@TODO: only add only needed chunks just like in the add after
 					//save the computation from last time
 
-					//@TODO: multithread this computation by adding processed chunks into separate arrays and then merging them tothether
-					//
-
-					top   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0, -1}), empty_chunks);
-					bot   = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 0,  1}), empty_chunks);
-					left  = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}), empty_chunks);
-					right = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  0}), empty_chunks);
+					top   = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec( 0, -1)), empty_chunks);
+					bot   = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec( 0,  1)), empty_chunks);
+					left  = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec(-1,  0)), empty_chunks);
+					right = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec( 1,  0)), empty_chunks);
 				
-					top_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}), empty_chunks);
-					top_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1, -1}), empty_chunks);
-					bot_l = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}), empty_chunks);
-					bot_r = get_chunk_or(curr_chunk_hash, vec_add(chunk->pos, Vec2i{ 1,  1}), empty_chunks);
+					top_l = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec(-1, -1)), empty_chunks);
+					top_r = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec( 1, -1)), empty_chunks);
+					bot_l = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec(-1,  1)), empty_chunks);
+					bot_r = chunk_hash_get_or(curr_chunk_hash, vec_add(chunk->pos, vec( 1,  1)), empty_chunks);
 				}
 
-				#define OUTER (CHUNK_SIZE + 1)
-
-				u64 R_OUTER_BIT = ((u64) 1 << OUTER);
-				u64 L_OUTER_BIT = ((u64) 1);
-				u64 CONTENT_BITS = (((u64) -1) & ~R_OUTER_BIT) & ~L_OUTER_BIT;
-				for(i32 i = OUTER; i < 64; i++)
-					CONTENT_BITS &= ~((u64) 1 << i);
-
-				//@TODO: use get set for this somehow & figure out what to do with middles
-				Chunk assembled = {};
-
-				assembled.data[0]  = top->data[OUTER - 1] & CONTENT_BITS;
-				assembled.data[OUTER] = bot->data[1] & CONTENT_BITS;
-				
-				u64 top_l_bit = (top_l->data[OUTER - 1] << 1) & R_OUTER_BIT;
-				u64 top_r_bit = (top_r->data[OUTER - 1] >> 1) & L_OUTER_BIT;
-				u64 bot_l_bit = (bot_l->data[1] << 1) & R_OUTER_BIT;
-				u64 bot_r_bit = (bot_r->data[1] >> 1) & L_OUTER_BIT;
-
-				assembled.data[0]  |= top_l_bit >> OUTER;
-				assembled.data[0]  |= top_r_bit << OUTER;
-				
-				assembled.data[OUTER] |= bot_l_bit >> OUTER;
-				assembled.data[OUTER] |= bot_r_bit << OUTER;
-
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
+				//Main life algorhirm
 				{
-					u64 middle = chunk->data[i + 1] & CONTENT_BITS;
-					u64 first = (left->data[i + 1] << 1) & R_OUTER_BIT;
-					u64 last = (right->data[i + 1] >> 1) & L_OUTER_BIT;
+					#define OUTER (CHUNK_SIZE + 1)
 
-					assembled.data[1 + i] = (first >> OUTER) | middle | (last << OUTER);
-				}
+					//Generate Masks: R|CONTENT_BITS|L|0
+					u64 R_OUTER_BIT = ((u64) 1 << OUTER); 
+					u64 L_OUTER_BIT = ((u64) 1);
+					u64 CONTENT_BITS = (((u64) -1) & ~R_OUTER_BIT) & ~L_OUTER_BIT;
+
+					for(i32 i = OUTER; i < 64; i++)
+						CONTENT_BITS &= ~((u64) 1 << i);
+
+					//Holds a composed value for the currently processed block.
+					//Includes the edge from adjecent chunks
+					Chunk assembled = {0};
+
+					//Fill edge pixels from adjecent chunks
+					assembled.data[0]  = top->data[OUTER - 1] & CONTENT_BITS;
+					assembled.data[OUTER] = bot->data[1] & CONTENT_BITS;
 				
-				Chunk new_chunk = {0};
-				new_chunk.pos = chunk->pos;
-				u64 pattern = 011'11111'11111'11111'11111;//pattern of 0b001001... repeating (in oct)
-				u64 oct0 = pattern << 0; //pattern of 0b001001...
-				u64 oct1 = pattern << 1; //pattern of 0b010010...
-				u64 oct2 = pattern << 2; //pattern of 0b100100...
-					
-				{
-					PERF_COUNTER("life");
-					//for all three offsets in the 3 bit slots
-					for(i32 slot = 0; slot < 3; slot++)
+					u64 top_l_bit = (top_l->data[OUTER - 1] << 1) & R_OUTER_BIT;
+					u64 top_r_bit = (top_r->data[OUTER - 1] >> 1) & L_OUTER_BIT;
+					u64 bot_l_bit = (bot_l->data[1] << 1) & R_OUTER_BIT;
+					u64 bot_r_bit = (bot_r->data[1] >> 1) & L_OUTER_BIT;
+
+					assembled.data[0]  |= top_l_bit >> OUTER;
+					assembled.data[0]  |= top_r_bit << OUTER;
+				
+					assembled.data[OUTER] |= bot_l_bit >> OUTER;
+					assembled.data[OUTER] |= bot_r_bit << OUTER;
+
+					//Adds the middle set of data from the main processed chunk
+					for(i32 i = 0; i < CHUNK_SIZE; i++)
 					{
-						u64 accumulators[64] = {0};
+						u64 middle = chunk->data[i + 1] & CONTENT_BITS;
+						u64 first = (left->data[i + 1] << 1) & R_OUTER_BIT;
+						u64 last = (right->data[i + 1] >> 1) & L_OUTER_BIT;
 
-						for(i32 i = 0; i < 64; i++)
-						{
-							u64 curr_accumulator = 0;
-							u64 slid = (assembled.data[i] << 1); 
-							//we have to align it so that its in the ceneter of the oct
-							//otherwise for     0b 0 0 1 0 0 0 1 0
-							//we woudl geenrate    1 1 1 0 1 1 1 0
-							//but we want:         0 1 1 1 0 1 1 1
-
-							curr_accumulator += (oct0 & (slid >> (0 + slot)));
-							curr_accumulator += (oct0 & (slid >> (1 + slot)));
-							curr_accumulator += (oct0 & (slid >> (2 + slot)));
-							accumulators[i] = curr_accumulator;
-						}
-
-						//iterate all inner cells of the chunk
-						for(i32 y = 1; y < OUTER; y++)
-						{
-							u64 first_sum = accumulators[y - 1] + accumulators[y];
-							u64 has_4 = first_sum & oct2;
+						assembled.data[1 + i] = (first >> OUTER) | middle | (last << OUTER);
+					}
+					Chunk new_chunk = {0};
+					new_chunk.pos = chunk->pos;
+				
+					u64 pattern = 01111111111111111111111;//pattern of 0b...001001 repeating (in oct)
+					u64 oct0 = pattern << 0; //pattern of 0b...001001
+					u64 oct1 = pattern << 1; //pattern of 0b...010010
+					u64 oct2 = pattern << 2; //pattern of 0b...100100 
 					
-							u64 has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
+					{
+						PERF_COUNTER("life");
+						//for all three offsets in the 3 bit slots
+						for(i32 slot = 0; slot < 3; slot++)
+						{
+							u64 accumulators[64] = {0};
 
-							u64 is_overfull = has_4 & has_any;
-							u64 complete_sum_stage_1 = ~is_overfull & first_sum;
-							u64 complete_sum_stage_2 = accumulators[y + 1];
-							u64 complete_sum = (~is_overfull & first_sum) + accumulators[y + 1];
+							for(i32 i = 0; i < 64; i++)
+							{
+								u64 curr_accumulator = 0;
+								u64 slid = (assembled.data[i] << 1); 
+								//we have to align it so that its in the ceneter of the oct
+								//otherwise for     0b 0 0 1 0 0 0 1 0
+								//we woudl geenrate    1 1 1 0 1 1 1 0
+								//but we want:         0 1 1 1 0 1 1 1
 
-							u64 three_pattern = oct0 | oct1;
-							u64 four_pattern = oct2;
+								curr_accumulator += (oct0 & (slid >> (0 + slot)));
+								curr_accumulator += (oct0 & (slid >> (1 + slot)));
+								curr_accumulator += (oct0 & (slid >> (2 + slot)));
+								accumulators[i] = curr_accumulator;
+							}
 
-							u64 three_check = three_pattern ^ complete_sum; //completely 0 if is three
-							u64 four_check = four_pattern ^ complete_sum; //completely 0 if is four
-
-							u64 is_not_three = (three_check & oct0) << 2 | (three_check & oct1) << 1 | (three_check & oct2) << 0;
-							u64 is_not_four  = (four_check & oct0) << 2 | (four_check & oct1) << 1 | (four_check & oct2) << 0;    
-							u64 is_alive     = (oct0 & (assembled.data[y] >> slot)) << 2; 
+							//iterate all inner cells of the chunk
+							for(i32 y = 1; y < OUTER; y++)
+							{
+								u64 first_sum = accumulators[y - 1] + accumulators[y];
+								u64 has_4 = first_sum & oct2;
 					
-							u64 is_three = ~is_not_three; 
-							u64 is_four = ~is_not_four; 
-							u64 is_next_alive = (is_three | (is_alive & is_four)) & ~is_overfull;
+								u64 has_any = ((accumulators[y + 1] & oct1) << 1 | (accumulators[y + 1] & oct0) << 2);
 
-							is_next_alive &= oct2;
+								u64 is_overfull = has_4 & has_any; //the sum around has value higher or equal to 4 (if is true dies)
+								u64 complete_sum_stage_1 = ~is_overfull & first_sum;
+								u64 complete_sum_stage_2 = accumulators[y + 1];
+								u64 complete_sum = (~is_overfull & first_sum) + accumulators[y + 1];
 
-							new_chunk.data[y] |= (is_next_alive >> (2 - slot));
+								u64 three_pattern = oct0 | oct1;
+								u64 four_pattern = oct2;
+
+								u64 three_check = three_pattern ^ complete_sum; //completely 0 if is three
+								u64 four_check = four_pattern ^ complete_sum; //completely 0 if is four
+
+								u64 is_not_three = (three_check & oct0) << 2 | (three_check & oct1) << 1 | (three_check & oct2) << 0;
+								u64 is_not_four  = (four_check & oct0) << 2 | (four_check & oct1) << 1 | (four_check & oct2) << 0;    
+								u64 is_alive     = (oct0 & (assembled.data[y] >> slot)) << 2; 
+					
+								u64 is_three = ~is_not_three; 
+								u64 is_four = ~is_not_four; 
+								u64 is_next_generation_alive = (is_three | (is_alive & is_four)) & ~is_overfull;
+
+								is_next_generation_alive &= oct2;
+
+								new_chunk.data[y] |= (is_next_generation_alive >> (2 - slot));
+							}
 						}
 					}
-				}
 
-				const auto compare_chunks = [&](Chunk* a, Chunk* b){
-					u64 result = 0;
+					const auto compare_chunks = [&](Chunk* a, Chunk* b){
+						u64 result = 0;
+						for(i32 i = 0; i < CHUNK_SIZE; i++)
+							result |= (a->data[1 + i] & CONTENT_BITS) ^ (b->data[1 + i] & CONTENT_BITS);
+					
+						return result == 0;
+					};
+
+					u64 acummulated = 0;
 					for(i32 i = 0; i < CHUNK_SIZE; i++)
-						result |= (a->data[1 + i] & CONTENT_BITS) ^ (b->data[1 + i] & CONTENT_BITS);
+						acummulated |= new_chunk.data[1 + i] & CONTENT_BITS;
+
+					//Unless chunk is comletely dead insert itself alongside all neigboring chunks chunk_hash the next generation
+					if(acummulated != 0)
+					{
+						PERF_COUNTER("neighbour add");
+						i32 curr_i = chunk_hash_insert(next_chunk_hash, chunk->pos);
+						*chunk_hash_at(next_chunk_hash, curr_i) = new_chunk;
 					
-					return result == 0;
-				};
+						//left right 
+						if(acummulated & ((u64) 1 << 1))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(-1,  0)));
+						if(acummulated & ((u64) 1 << CHUNK_SIZE))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(1,  0)));
 
-				u64 acummulated = 0;
-				for(i32 i = 0; i < CHUNK_SIZE; i++)
-					acummulated |= new_chunk.data[1 + i] & CONTENT_BITS;
-
-				//Unless chunk is comletely dead insert itself alongside all neigboring chunks chunk_hash the next generation
-				if(acummulated != 0)
-				{
-					PERF_COUNTER("neighbour add");
-					i32 curr_i = insert_chunk(next_chunk_hash, chunk->pos);
-					*get_chunk(next_chunk_hash, curr_i) = new_chunk;
-					
-					//left right 
-					if(acummulated & ((u64) 1 << 1))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  0}));
-					if(acummulated & ((u64) 1 << CHUNK_SIZE))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  0}));
-
-					//top bot
-					if(new_chunk.data[1] & CONTENT_BITS)
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  -1}));
-					if(new_chunk.data[CHUNK_SIZE] & CONTENT_BITS)
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{0,  1}));
+						//top bot
+						if(new_chunk.data[1] & CONTENT_BITS)
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(0,  -1)));
+						if(new_chunk.data[CHUNK_SIZE] & CONTENT_BITS)
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(0,  1)));
 						
-					//diagonals - there is only very small chence these will get added
-					if(get_cell_in_chunk(&new_chunk, Vec2i{0, 0}))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1, -1}));
-					if(get_cell_in_chunk(&new_chunk, Vec2i{0, CHUNK_SIZE - 1}))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{-1,  1}));
-					if(get_cell_in_chunk(&new_chunk, Vec2i{CHUNK_SIZE - 1, 0}))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  -1}));
-					if(get_cell_in_chunk(&new_chunk, Vec2i{CHUNK_SIZE - 1, CHUNK_SIZE - 1}))
-						insert_chunk(next_chunk_hash, vec_add(chunk->pos, Vec2i{1,  1}));
+						//diagonals - there is only very small chence these will get added
+						if(chunk_get_cell(&new_chunk, vec(0, 0)))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(-1, -1)));
+						if(chunk_get_cell(&new_chunk, vec(0, CHUNK_SIZE - 1)))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(-1,  1)));
+						if(chunk_get_cell(&new_chunk, vec(CHUNK_SIZE - 1, 0)))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(1,  -1)));
+						if(chunk_get_cell(&new_chunk, vec(CHUNK_SIZE - 1, CHUNK_SIZE - 1)))
+							chunk_hash_insert(next_chunk_hash, vec_add(chunk->pos, vec(1,  1)));
+					}
 				}
 			}
 			
@@ -716,35 +701,32 @@ int main(int argc, char *argv[]) {
 	printf("total time: %lf\n", clock_s());
 	printf("generations: %d\n", (int) generation);
 	printf("generations/s: %lf\n", generation / clock_s());
+
+	const Perf_Counter* perf_counters = perf_get_counters();
 	for(isize i = 0; i < MAX_PERF_COUNTERS; i++)
 	{
-		if(perf_counters[i].function != nullptr)
+		Perf_Counter counter = perf_counters[i];
+		if(counter.runs != 0)
 		{
-			Perf_Counter* counter = &perf_counters[i];
-			f64 total_s = (f64) counter->counter / (f64) perf_counter_freq() ;
-			f64 per_run_s = total_s / (f64) counter->runs;
-			using ll = long long;
+			f64 total_s = perf_counter_get_total_running_time_s(counter);
+			f64 per_run_s = perf_counter_get_average_running_time_s(counter);
 
-			if(counter->name)
-				printf("%s %lld \"%s\": total: %8.8lf run: %8.8lf runs: %lld\n", 
-					counter->function, (ll) counter->line, counter->name, total_s, per_run_s, (ll) counter->runs);
-			else
-				printf("%s %lld: total: %8.8lf run: %8.8lf runs: %lld\n", 
-					counter->function, (ll) counter->line, total_s, per_run_s, (ll) counter->runs);
+			printf("%-25s: total: %8.8lf run: %8.8lf runs: %-8lld at %s %lld\n", 
+				counter.name ? counter.name : "", total_s, per_run_s, (lld) counter.runs, counter.function, (lld) counter.line);
 		}
 	}
 	
 	#ifdef DO_CLEANUP
-	SDL_DestroyTexture(xstrip_chunk_texture);
-	SDL_DestroyTexture(ystrip_chunk_texture);
+	SDL_DestroyTexture(clear_chunk_texture1);
+	SDL_DestroyTexture(clear_chunk_texture2);
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(window);
 	
 	for(i32 i = 0; i < CHUNK_HASHES_COUNT; i++)
-		destroy_chunk_hash(&chunk_hashes[i]);
-	#endif // DO_CLEANUP
+		chunk_hash_deinit(&chunk_hashes[i]);
 
 	SDL_Quit(); 
+	#endif // DO_CLEANUP
 	return 0;
 }
 

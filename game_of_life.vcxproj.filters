@@ -18,12 +18,21 @@
     <ClCompile Include="game_of_life.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="chunk_hash.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="perf.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="time.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="load.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="time.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="parallel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="chunk_hash.h">
@@ -35,7 +44,13 @@
     <ClInclude Include="load.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="temp.h">
+    <ClInclude Include="perf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="alloc.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="chunk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

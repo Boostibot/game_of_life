@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <assert.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -25,6 +26,9 @@ typedef const char* cstring;
 typedef ptrdiff_t isize;
 typedef size_t usize;
 
+//for printf
+typedef long long int lld;
+
 typedef struct Vec2i
 {
 	i32 x;
@@ -37,38 +41,31 @@ typedef struct Vec2f64
 	f64 y;
 } Vec2f64;
 
-static Vec2i vec_add(Vec2i a, Vec2i b);
-static Vec2i vec_sub(Vec2i a, Vec2i b);
-static Vec2i vec_mul(i32 a, Vec2i b);
-static bool vec_equal(Vec2i a, Vec2i b);
-
-struct Chunk
+static Vec2i vec(i32 x, i32 y)
 {
-	Vec2i pos;
+	Vec2i out = {x, y};
+	return out;
+}
 
-	//contains 64x64 bit field of cells
-	//Only the cells starting at index (1,1) and 
-	//ending at (61,61) are considered a part of the chunk
-	//the rest is from neighbouring chunks during loading 
-	u64 data[64]; 
-};
-
-static  Vec2i vec_add(Vec2i a, Vec2i b)
+static Vec2i vec_add(Vec2i a, Vec2i b)
 {
-	return Vec2i{a.x + b.x, a.y + b.y};
+	return vec(a.x + b.x, a.y + b.y);
 }
 
 static Vec2i vec_sub(Vec2i a, Vec2i b)
 {
-	return Vec2i{a.x - b.x, a.y - b.y};
-}
-
-static Vec2i vec_mul(i32 scalar, Vec2i vec)
-{
-	return Vec2i{scalar*vec.x, scalar*vec.y};
+	return vec(a.x - b.x, a.y - b.y);
 }
 
 static bool vec_equal(Vec2i a, Vec2i b)
 {
 	return a.x == b.x && a.y == b.y;
+}
+
+static i32 div_round_down(i32 val, i32 div_by)
+{
+	if(val >= 0)
+		return val / div_by;
+	else
+		return (val - div_by + 1) / div_by;
 }
